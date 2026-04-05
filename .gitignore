@@ -1,0 +1,20 @@
+# Original script (now in src/scripts/)
+/restic-backup.py
+
+# Claude Code
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

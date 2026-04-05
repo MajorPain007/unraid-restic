@@ -1,0 +1,6 @@
+Menu="Utilities"
+Title="Restic Backup"
+Icon="shield"
+Tag="backup"
+---
+<?php require_once '/usr/local/emhttp/plugins/restic-backup/ResticBackup.php'; ?>

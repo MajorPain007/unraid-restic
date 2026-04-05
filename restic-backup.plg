@@ -1,0 +1,141 @@
+<?xml version='1.0' standalone='yes'?>
+
+<!DOCTYPE PLUGIN [
+  <!ENTITY name      "restic-backup">
+  <!ENTITY author    "restic-backup">
+  <!ENTITY version   "2025.04.05">
+  <!ENTITY launch    "Settings/ResticBackup">
+  <!ENTITY gitURL    "https://raw.githubusercontent.com/GITHUB_USER/restic-unraid-plugin/main">
+  <!ENTITY pluginURL "&gitURL;/restic-backup.plg">
+  <!ENTITY resticVer "0.17.3">
+  <!ENTITY resticURL "https://github.com/restic/restic/releases/download/v&resticVer;/restic_&resticVer;_linux_amd64.bz2">
+]>
+
+<PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.12.0">
+
+<CHANGES>
+###2025.04.05
+- Initial release
+- Restic backup with GUI configuration
+- Multiple backup targets support
+- ZFS snapshot support (optional, recursive)
+- Configurable source directories
+- Exclude patterns (global + optional per target)
+- Scheduled backups via cron
+- Live log viewer
+</CHANGES>
+
+<!-- ============================================================ -->
+<!-- PRE-INSTALL: Download restic binary                          -->
+<!-- ============================================================ -->
+<FILE Name="/tmp/restic.bz2">
+<URL>&resticURL;</URL>
+</FILE>
+
+<!-- ============================================================ -->
+<!-- SOURCE PACKAGE (all plugin files)                            -->
+<!-- ============================================================ -->
+<FILE Name="/boot/config/plugins/&name;/&name;-&version;.txz">
+<URL>&gitURL;/archive/&name;-&version;.txz</URL>
+</FILE>
+
+<!-- ============================================================ -->
+<!-- POST-INSTALL SCRIPT                                          -->
+<!-- ============================================================ -->
+<FILE Run="/bin/bash">
+<INLINE>
+#!/bin/bash
+
+PLUGIN="&name;"
+PLUGIN_DIR="/usr/local/emhttp/plugins/${PLUGIN}"
+CONFIG_DIR="/boot/config/plugins/${PLUGIN}"
+
+echo "--- Installing Restic Backup Plugin ---"
+
+# 1. Install restic binary
+if [ -f /tmp/restic.bz2 ]; then
+    echo "Installing restic binary..."
+    bunzip2 -f /tmp/restic.bz2
+    mv /tmp/restic /usr/local/bin/restic
+    chmod 755 /usr/local/bin/restic
+    echo "Restic installed: $(restic version 2>/dev/null || echo 'unknown')"
+else
+    echo "WARNING: restic binary not found at /tmp/restic.bz2"
+fi
+
+# 2. Install plugin package
+PACKAGE="${CONFIG_DIR}/${PLUGIN}-&version;.txz"
+if [ -f "${PACKAGE}" ]; then
+    installpkg "${PACKAGE}"
+fi
+
+# 3. Create config directory
+mkdir -p "${CONFIG_DIR}"
+
+# 4. Set permissions
+chmod +x "${PLUGIN_DIR}/scripts/restic-backup.py" 2>/dev/null
+
+# 5. Restore cron if schedule was configured
+if [ -f "${CONFIG_DIR}/restic-backup.json" ]; then
+    CRON_ENABLED=$(python3 -c "
+import json
+try:
+    c = json.load(open('${CONFIG_DIR}/restic-backup.json'))
+    s = c.get('schedule', {})
+    if s.get('enabled') and s.get('cron'):
+        print(s['cron'])
+except: pass
+" 2>/dev/null)
+    if [ -n "${CRON_ENABLED}" ]; then
+        echo "${CRON_ENABLED} root /usr/bin/python3 ${PLUGIN_DIR}/scripts/restic-backup.py --backup > /dev/null 2>&1" > /etc/cron.d/restic-backup
+        echo "Cron schedule restored: ${CRON_ENABLED}"
+    fi
+fi
+
+echo "--- Restic Backup Plugin installed ---"
+</INLINE>
+</FILE>
+
+<!-- ============================================================ -->
+<!-- UNINSTALL SCRIPT                                             -->
+<!-- ============================================================ -->
+<FILE Run="/bin/bash" Method="remove">
+<INLINE>
+#!/bin/bash
+
+PLUGIN="&name;"
+
+echo "--- Removing Restic Backup Plugin ---"
+
+# Stop any running backup
+if [ -f /tmp/restic-backup.pid ]; then
+    PID=$(cat /tmp/restic-backup.pid)
+    if [ -d "/proc/${PID}" ]; then
+        kill "${PID}" 2>/dev/null
+        sleep 1
+        kill -9 "${PID}" 2>/dev/null
+    fi
+    rm -f /tmp/restic-backup.pid
+    rm -f /tmp/restic-backup.lock
+fi
+
+# Remove cron
+rm -f /etc/cron.d/restic-backup
+
+# Remove plugin files
+removepkg "${PLUGIN}-&version;" 2>/dev/null
+rm -rf "/usr/local/emhttp/plugins/${PLUGIN}"
+
+# Remove restic binary (optional - user may want to keep it)
+# rm -f /usr/local/bin/restic
+
+# Note: Config on USB (/boot/config/plugins/restic-backup/) is preserved
+# so the user doesn't lose settings on reinstall
+
+echo "--- Restic Backup Plugin removed ---"
+echo "Note: Config preserved at /boot/config/plugins/${PLUGIN}/"
+echo "To fully remove, delete that directory from the USB drive."
+</INLINE>
+</FILE>
+
+</PLUGIN>
