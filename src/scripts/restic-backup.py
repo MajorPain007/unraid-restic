@@ -2,6 +2,7 @@
 """
 Restic Backup Plugin for Unraid - Backend Script
 Reads config from /boot/config/plugins/restic-backup/restic-backup.json
+Supports multiple independent backup jobs.
 """
 import os
 import sys
@@ -42,21 +43,16 @@ class Logger:
         except Exception:
             pass
 
-    def info(self, msg):
-        self.log("INFO", msg)
-
-    def warn(self, msg):
-        self.log("WARN", msg)
-
-    def error(self, msg):
-        self.log("ERROR", msg)
+    def info(self, msg):  self.log("INFO", msg)
+    def warn(self, msg):  self.log("WARN", msg)
+    def error(self, msg): self.log("ERROR", msg)
 
     def notify(self, title, msg, severity="normal"):
         if not self.notifications_enabled:
             return
-        notify_script = "/usr/local/emhttp/webGui/scripts/notify"
-        if os.path.exists(notify_script):
-            subprocess.call([notify_script, "-s", title, "-d", msg, "-i", severity])
+        script = "/usr/local/emhttp/webGui/scripts/notify"
+        if os.path.exists(script):
+            subprocess.call([script, "-s", title, "-d", msg, "-i", severity])
 
 logger = Logger()
 
@@ -66,27 +62,24 @@ logger = Logger()
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
-        logger.error(f"Config file not found: {CONFIG_FILE}")
-        logger.error("Please configure the plugin via the Unraid web interface first.")
+        logger.error(f"Config not found: {CONFIG_FILE}")
+        logger.error("Please configure the plugin via the Unraid web interface.")
         sys.exit(1)
     with open(CONFIG_FILE, "r") as f:
         return json.load(f)
 
-def setup_env(config):
-    """Set up environment variables from config."""
+def setup_password(config):
     general = config.get("general", {})
-    password_mode = general.get("password_mode", "file")
-
-    if password_mode == "file":
+    mode = general.get("password_mode", "file")
+    if mode == "file":
         pw_file = general.get("password_file", "")
         if pw_file:
             os.environ["RESTIC_PASSWORD_FILE"] = pw_file
-    elif password_mode == "inline":
-        pw_inline = general.get("password_inline", "")
-        if pw_inline:
-            os.environ["RESTIC_PASSWORD"] = pw_inline
-
-    logger.notifications_enabled = config.get("notifications", {}).get("enabled", True)
+    elif mode == "inline":
+        pw = general.get("password_inline", "")
+        if pw:
+            os.environ["RESTIC_PASSWORD"] = pw
+    logger.notifications_enabled = general.get("notifications", True)
 
 # ==============================================================================
 # HELPERS
@@ -105,9 +98,9 @@ def run_cmd(cmd_list, check=True, cwd=None, env=None, capture_output=False):
             return result.stdout
         return True
     except subprocess.CalledProcessError as e:
-        return e.stderr
+        return e.stderr or f"Exit code {e.returncode}"
 
-def format_duration(seconds):
+def fmt(seconds):
     m, s = divmod(int(seconds), 60)
     return f"{m}m {s}s"
 
@@ -119,20 +112,16 @@ def acquire_lock():
     if os.path.exists(LOCK_FILE):
         try:
             with open(LOCK_FILE, "r") as f:
-                content = f.read().strip()
-                if content:
-                    pid = int(content)
-                    os.kill(pid, 0)
-                    logger.error(f"Backup already running (PID {pid}). Aborting.")
-                    return False
+                pid = int(f.read().strip())
+            os.kill(pid, 0)
+            logger.error(f"Backup already running (PID {pid}).")
+            return False
         except (ProcessLookupError, ValueError):
-            logger.warn("Found stale lock file. Removing...")
-            try:
-                os.remove(LOCK_FILE)
-            except OSError:
-                return False
+            logger.warn("Stale lock file found. Removing.")
+            try: os.remove(LOCK_FILE)
+            except OSError: return False
         except Exception as e:
-            logger.error(f"Error checking lock file: {e}")
+            logger.error(f"Lock check error: {e}")
             return False
 
     try:
@@ -142,24 +131,20 @@ def acquire_lock():
             f.write(str(os.getpid()))
         return True
     except Exception as e:
-        logger.error(f"Could not create lock file: {e}")
+        logger.error(f"Could not create lock: {e}")
         return False
 
 def release_lock():
     for f in [LOCK_FILE, PID_FILE]:
         if os.path.exists(f):
-            try:
-                os.remove(f)
-            except Exception:
-                pass
+            try: os.remove(f)
+            except: pass
 
 # ==============================================================================
-# ZFS SNAPSHOTS
+# ZFS
 # ==============================================================================
 
-def create_zfs_snapshots(config):
-    """Create ZFS snapshots if enabled. Returns list of (dataset, snap_name) created."""
-    zfs_conf = config.get("zfs", {})
+def create_zfs_snapshots(zfs_conf):
     if not zfs_conf.get("enabled", False):
         return []
 
@@ -167,380 +152,301 @@ def create_zfs_snapshots(config):
     recursive = zfs_conf.get("recursive", True)
     prefix = zfs_conf.get("snapshot_prefix", "restic-backup")
     snap_name = f"{prefix}-{datetime.datetime.now():%Y%m%d-%H%M%S}"
-
     created = []
 
     for parent_ds in datasets:
         if recursive:
-            # Get all child datasets
             try:
                 output = subprocess.check_output(
-                    ["zfs", "list", "-H", "-r", "-o", "name", parent_ds],
-                    text=True
+                    ["zfs", "list", "-H", "-r", "-o", "name", parent_ds], text=True
                 ).splitlines()
             except subprocess.CalledProcessError as e:
-                logger.warn(f"Could not list datasets under {parent_ds}: {e}")
+                logger.warn(f"Cannot list datasets under {parent_ds}: {e}")
                 continue
-
             for ds in output:
                 ds = ds.strip()
-                if not ds:
-                    continue
-                full_snap = f"{ds}@{snap_name}"
-                result = run_cmd(["zfs", "snapshot", full_snap], check=False)
+                if not ds: continue
+                result = run_cmd(["zfs", "snapshot", f"{ds}@{snap_name}"], check=False)
                 if result is True:
                     created.append((ds, snap_name))
-                    logger.info(f"Snapshot created: {full_snap}")
+                    logger.info(f"Snapshot: {ds}@{snap_name}")
                 else:
-                    logger.warn(f"Could not snapshot {ds}: {result}")
+                    logger.warn(f"Snapshot failed {ds}: {result}")
         else:
-            full_snap = f"{parent_ds}@{snap_name}"
-            result = run_cmd(["zfs", "snapshot", full_snap], check=False)
+            result = run_cmd(["zfs", "snapshot", f"{parent_ds}@{snap_name}"], check=False)
             if result is True:
                 created.append((parent_ds, snap_name))
-                logger.info(f"Snapshot created: {full_snap}")
+                logger.info(f"Snapshot: {parent_ds}@{snap_name}")
             else:
-                logger.warn(f"Could not snapshot {parent_ds}: {result}")
+                logger.warn(f"Snapshot failed {parent_ds}: {result}")
 
     return created
 
-def mount_zfs_snapshots(snapshots):
-    """Bind-mount ZFS snapshots read-only into the backup root."""
+def mount_zfs_snapshots(snapshots, mount_root):
     for ds, snap_name in snapshots:
         real_path = f"/mnt/{ds}/.zfs/snapshot/{snap_name}"
-        target = os.path.join(MOUNT_ROOT, "zfs-snapshots", ds.replace("/", "_"))
-
+        target = os.path.join(mount_root, "zfs-snapshots", ds.replace("/", "_"))
         if not os.path.exists(real_path):
-            logger.warn(f"Snapshot path does not exist: {real_path}")
+            logger.warn(f"Snapshot path missing: {real_path}")
             continue
-
         os.makedirs(target, exist_ok=True)
         result = run_cmd(["mount", "--bind", "-o", "ro", real_path, target], check=False)
         if result is not True:
-            logger.warn(f"Could not mount {real_path}: {result}")
+            logger.warn(f"Mount failed {real_path}: {result}")
 
 def destroy_zfs_snapshots(snapshots):
-    """Clean up ZFS snapshots."""
     for ds, snap_name in snapshots:
-        full_snap = f"{ds}@{snap_name}"
-        run_cmd(["zfs", "destroy", full_snap], check=False)
+        run_cmd(["zfs", "destroy", f"{ds}@{snap_name}"], check=False)
 
 # ==============================================================================
 # BACKUP ENVIRONMENT
 # ==============================================================================
 
 def cleanup(snapshots=None):
-    """Clean up mounts, snapshots, and lock files."""
     logger.info("Cleaning up...")
-
     if os.path.exists(MOUNT_ROOT):
         try:
             mounts = subprocess.getoutput("cat /proc/mounts").splitlines()
-            active = [line.split()[1] for line in mounts if MOUNT_ROOT in line.split()[1]]
+            active = [l.split()[1] for l in mounts if MOUNT_ROOT in l.split()[1]]
             for m in sorted(active, key=len, reverse=True):
                 run_cmd(["umount", "-l", m], check=False)
-        except Exception:
-            pass
-        try:
-            shutil.rmtree(MOUNT_ROOT)
-        except Exception:
-            pass
-
+        except: pass
+        try: shutil.rmtree(MOUNT_ROOT)
+        except: pass
     if snapshots:
         destroy_zfs_snapshots(snapshots)
-
     release_lock()
 
-def prepare_env(config):
-    """Prepare the backup mount structure from config."""
-    logger.info("Preparing backup structure...")
+def prepare_job_env(job):
+    job_root = os.path.join(MOUNT_ROOT, job.get("id", "default"))
+    os.makedirs(job_root, exist_ok=True)
 
-    os.makedirs(MOUNT_ROOT, exist_ok=True)
-
-    # Mount configured source directories
-    sources = config.get("sources", [])
-    for src in sources:
+    # Mount sources
+    for src in job.get("sources", []):
         if not src.get("enabled", True):
             continue
-
         path = src.get("path", "")
         label = src.get("label", "") or os.path.basename(path)
-
         if not path or not os.path.exists(path):
-            logger.warn(f"Source path does not exist, skipping: {path}")
+            logger.warn(f"Source missing: {path}")
             continue
-
-        target = os.path.join(MOUNT_ROOT, label)
+        target = os.path.join(job_root, label)
         os.makedirs(target, exist_ok=True)
-
-        if src.get("readonly_mount", True):
-            result = run_cmd(["mount", "--bind", "-o", "ro", path, target], check=False)
-        else:
-            result = run_cmd(["mount", "--bind", path, target], check=False)
-
+        result = run_cmd(["mount", "--bind", "-o", "ro", path, target], check=False)
         if result is True:
-            logger.info(f"Mounted: {path} -> {label}")
+            logger.info(f"Source: {path} -> {label}")
         else:
-            logger.warn(f"Could not mount {path}: {result}")
+            logger.warn(f"Mount failed {path}: {result}")
 
     # ZFS Snapshots
-    snapshots = create_zfs_snapshots(config)
+    snapshots = create_zfs_snapshots(job.get("zfs", {}))
     if snapshots:
-        mount_zfs_snapshots(snapshots)
+        mount_zfs_snapshots(snapshots, job_root)
 
-    return snapshots
+    return job_root, snapshots
 
 # ==============================================================================
-# BACKUP COMMAND
+# RUN JOB
 # ==============================================================================
 
-def do_backup(config):
-    """Run backup to all configured targets."""
-    sys.stdout.reconfigure(line_buffering=True)
-    t_start = time.time()
+def run_job(config, job):
+    job_name = job.get("name", "Unnamed")
+    logger.info(f"=== Job: {job_name} ===")
+    t_job = time.time()
 
-    logger.info("--- Starting Backup ---")
+    targets = job.get("targets", [])
+    excludes = job.get("excludes", {})
+    retention = job.get("retention", {})
+    check_conf = job.get("check", {})
+    max_retries = job.get("max_retries", 3)
+    retry_wait = job.get("retry_wait", 30)
+    hostname = config.get("general", {}).get("hostname", "")
+    tags = job.get("tags", "")
 
-    if not acquire_lock():
-        sys.exit(1)
-
-    setup_env(config)
-    general = config.get("general", {})
-    targets = config.get("targets", [])
-    excludes = config.get("excludes", {})
-
-    max_retries = general.get("max_retries", 3)
-    retry_wait = general.get("retry_wait", 30)
-    check_enabled = general.get("check_enabled", False)
-    check_pct = general.get("check_percentage", "2%")
-    check_schedule = general.get("check_schedule", "sunday")
-
-    hostname = general.get("hostname", "")
-    tags = general.get("tags", "")
-
+    job_root, snapshots = prepare_job_env(job)
     success = 0
     fail = 0
-    snapshots = []
 
     try:
-        snapshots = prepare_env(config)
-
         for target in targets:
             if not target.get("enabled", True):
                 continue
-
             url = target.get("url", "")
             name = target.get("name", url)
-
             if not url:
-                logger.warn(f"Target has no URL, skipping: {name}")
+                logger.warn(f"Target has no URL: {name}")
                 continue
 
             logger.info(f"Target: {name}")
             t_repo = time.time()
 
-            # Build restic backup command
             cmd = ["restic", "-r", url, "backup", "."]
-
             if tags:
                 cmd.extend(["--tag", tags])
             if hostname:
                 cmd.extend(["--host", hostname])
 
-            # Global excludes (always applied)
             for ex in excludes.get("global", []):
-                if ex.strip():
-                    cmd.append(f"--exclude={ex.strip()}")
+                ex = ex.strip()
+                if ex: cmd.append(f"--exclude={ex}")
 
-            # Optional excludes (only if target opts in)
             if target.get("use_optional_excludes", False):
-                logger.info("-> Applying optional excludes")
+                logger.info("  Applying optional excludes")
                 for ex in excludes.get("optional", []):
-                    if ex.strip():
-                        cmd.append(f"--exclude={ex.strip()}")
+                    ex = ex.strip()
+                    if ex: cmd.append(f"--exclude={ex}")
 
-            # Upload with retries
-            logger.info("-> Uploading...")
-            t_upload = time.time()
-            upload_ok = False
-
+            # Upload
+            logger.info("  Uploading...")
+            t_up = time.time()
+            ok = False
             for attempt in range(1, max_retries + 1):
-                result = run_cmd(cmd, cwd=MOUNT_ROOT, check=False)
+                result = run_cmd(cmd, cwd=job_root, check=False)
                 if result is True:
-                    upload_ok = True
+                    ok = True
                     break
                 elif attempt < max_retries:
-                    logger.warn(f"Attempt {attempt}/{max_retries} failed. Retrying in {retry_wait}s...")
+                    logger.warn(f"  Attempt {attempt}/{max_retries} failed, retry in {retry_wait}s...")
                     time.sleep(retry_wait)
                 else:
-                    logger.error(f"All {max_retries} attempts failed. Error: {result}")
+                    logger.error(f"  All attempts failed: {result}")
 
-            upload_duration = format_duration(time.time() - t_upload)
+            up_dur = fmt(time.time() - t_up)
 
-            if upload_ok:
-                logger.info(f"Upload finished ({upload_duration})")
+            if ok:
+                logger.info(f"  Upload done ({up_dur})")
 
-                # Prune
-                logger.info("-> Pruning...")
-                run_cmd(["restic", "-r", url, "forget",
-                         "--keep-daily", "7", "--keep-weekly", "4", "--prune"], check=False)
+                # Retention / Prune
+                prune_cmd = ["restic", "-r", url, "forget", "--prune"]
+                kd = retention.get("keep_daily", 7)
+                kw = retention.get("keep_weekly", 4)
+                km = retention.get("keep_monthly", 0)
+                ky = retention.get("keep_yearly", 0)
+                if kd: prune_cmd.extend(["--keep-daily", str(kd)])
+                if kw: prune_cmd.extend(["--keep-weekly", str(kw)])
+                if km: prune_cmd.extend(["--keep-monthly", str(km)])
+                if ky: prune_cmd.extend(["--keep-yearly", str(ky)])
+
+                logger.info("  Pruning...")
+                run_cmd(prune_cmd, check=False)
 
                 # Stats
-                logger.info("-> Statistics...")
                 stats = run_cmd(["restic", "-r", url, "stats", "latest",
                                  "--mode", "restore-size"], check=False, capture_output=True)
                 if stats and isinstance(stats, str):
                     for line in stats.splitlines():
                         if "Total Size" in line or "Total File Count" in line:
-                            logger.info(f"   {line.strip()}")
+                            logger.info(f"  {line.strip()}")
 
                 # Integrity check
                 should_check = False
-                if check_enabled:
-                    if check_schedule == "always":
+                if check_conf.get("enabled", False):
+                    sched = check_conf.get("schedule", "sunday")
+                    if sched == "always":
                         should_check = True
-                    elif check_schedule == "sunday" and datetime.datetime.now().weekday() == 6:
+                    elif sched == "sunday" and datetime.datetime.now().weekday() == 6:
                         should_check = True
-                    elif check_schedule == "monthly" and datetime.datetime.now().day == 1:
+                    elif sched == "monthly" and datetime.datetime.now().day == 1:
                         should_check = True
 
                 if should_check:
-                    logger.info(f"-> Integrity Check ({check_pct})...")
-                    check_res = run_cmd(["restic", "-r", url, "check",
-                                         f"--read-data-subset={check_pct}"], check=False)
-                    if check_res is True:
-                        logger.info("Integrity Check Passed")
+                    pct = check_conf.get("percentage", "2%")
+                    logger.info(f"  Integrity check ({pct})...")
+                    cr = run_cmd(["restic", "-r", url, "check", f"--read-data-subset={pct}"], check=False)
+                    if cr is True:
+                        logger.info("  Check passed")
                     else:
-                        logger.warn("Integrity Check found issues!")
-                        logger.notify("Restic Backup", f"Integrity Check on {name} found issues!", "warning")
+                        logger.warn(f"  Check issues: {cr}")
+                        logger.notify("Restic Backup", f"Check issues on {name}", "warning")
 
-                repo_duration = format_duration(time.time() - t_repo)
-                logger.info(f"== Target {name} completed ({repo_duration}) ==")
-                logger.notify("Restic Backup", f"{name} finished ({upload_duration})", "normal")
+                logger.info(f"  Target done ({fmt(time.time() - t_repo)})")
+                logger.notify("Restic Backup", f"{job_name}/{name} OK ({up_dur})", "normal")
                 success += 1
             else:
-                logger.error(f"FAILED: {name}")
-                logger.notify("Restic Backup", f"{name} failed! Check logs.", "alert")
+                logger.error(f"  FAILED: {name}")
+                logger.notify("Restic Backup", f"{job_name}/{name} failed!", "alert")
                 fail += 1
 
+    finally:
+        # Cleanup job-specific mounts
+        if os.path.exists(job_root):
+            try:
+                mounts = subprocess.getoutput("cat /proc/mounts").splitlines()
+                active = [l.split()[1] for l in mounts if job_root in l.split()[1]]
+                for m in sorted(active, key=len, reverse=True):
+                    run_cmd(["umount", "-l", m], check=False)
+            except: pass
+            try: shutil.rmtree(job_root)
+            except: pass
+        if snapshots:
+            destroy_zfs_snapshots(snapshots)
+
+    logger.info(f"=== Job {job_name} done ({fmt(time.time() - t_job)}) ===")
+    return success, fail
+
+# ==============================================================================
+# BACKUP COMMAND
+# ==============================================================================
+
+def do_backup(config, job_id=None):
+    sys.stdout.reconfigure(line_buffering=True)
+    t_start = time.time()
+    logger.info("--- Starting Backup ---")
+
+    if not acquire_lock():
+        sys.exit(1)
+
+    setup_password(config)
+    os.makedirs(MOUNT_ROOT, exist_ok=True)
+
+    total_ok = 0
+    total_fail = 0
+
+    try:
+        jobs = config.get("jobs", [])
+        for job in jobs:
+            if job_id and job.get("id") != job_id:
+                continue
+            if not job.get("enabled", True):
+                continue
+            ok, fail = run_job(config, job)
+            total_ok += ok
+            total_fail += fail
     except Exception as e:
         logger.error(f"CRITICAL: {e}")
-        logger.notify("Restic Backup", f"Script aborted: {e}", "alert")
-        fail += 1
+        logger.notify("Restic Backup", f"Aborted: {e}", "alert")
+        total_fail += 1
     finally:
-        cleanup(snapshots)
+        cleanup()
 
-    total = format_duration(time.time() - t_start)
-
-    if fail == 0 and success > 0:
-        msg = f"All targets OK ({total})"
-        logger.info(msg)
-        logger.notify("Restic Backup", msg, "normal")
-    elif success > 0:
-        logger.notify("Restic Backup", f"Partial: {success} OK, {fail} failed", "warning")
+    dur = fmt(time.time() - t_start)
+    if total_fail == 0 and total_ok > 0:
+        logger.info(f"All OK ({dur})")
+        logger.notify("Restic Backup", f"All OK ({dur})", "normal")
+    elif total_ok > 0:
+        logger.notify("Restic Backup", f"Partial: {total_ok} OK, {total_fail} failed", "warning")
+    elif total_ok == 0 and total_fail == 0:
+        logger.info("No enabled jobs/targets found.")
     else:
-        logger.notify("Restic Backup", "All targets FAILED!", "alert")
+        logger.notify("Restic Backup", "All FAILED!", "alert")
 
     logger.info("--- Done ---")
-    return 0 if fail == 0 else 1
+    return 0 if total_fail == 0 else 1
 
 # ==============================================================================
-# REPO MANAGEMENT
+# STATUS
 # ==============================================================================
-
-def do_init(config, target_id):
-    """Initialize a restic repository for a specific target."""
-    setup_env(config)
-    target = None
-    for t in config.get("targets", []):
-        if t.get("id") == target_id:
-            target = t
-            break
-
-    if not target:
-        print(json.dumps({"error": f"Target not found: {target_id}"}))
-        return 1
-
-    url = target.get("url", "")
-    name = target.get("name", url)
-    print(json.dumps({"status": "running", "message": f"Initializing repo: {name}"}))
-
-    result = run_cmd(["restic", "-r", url, "init"], check=False, capture_output=True)
-    if result and "created restic repository" in result.lower():
-        print(json.dumps({"status": "success", "message": f"Repository initialized: {name}"}))
-        return 0
-
-    # Check if already initialized
-    if isinstance(result, str) and "already" in result.lower():
-        print(json.dumps({"status": "success", "message": f"Repository already exists: {name}"}))
-        return 0
-
-    print(json.dumps({"status": "error", "message": str(result)}))
-    return 1
-
-def do_test(config, target_id):
-    """Test connection to a target repository."""
-    setup_env(config)
-    target = None
-    for t in config.get("targets", []):
-        if t.get("id") == target_id:
-            target = t
-            break
-
-    if not target:
-        print(json.dumps({"error": f"Target not found: {target_id}"}))
-        return 1
-
-    url = target.get("url", "")
-    name = target.get("name", url)
-
-    result = run_cmd(["restic", "-r", url, "snapshots", "--latest", "1"], check=False, capture_output=True)
-    if result is True or (isinstance(result, str) and "ID" in result):
-        print(json.dumps({"status": "success", "message": f"Connection OK: {name}"}))
-        return 0
-
-    print(json.dumps({"status": "error", "message": str(result)}))
-    return 1
-
-def do_snapshots(config, target_id):
-    """List snapshots for a target."""
-    setup_env(config)
-    target = None
-    for t in config.get("targets", []):
-        if t.get("id") == target_id:
-            target = t
-            break
-
-    if not target:
-        print(json.dumps({"error": f"Target not found: {target_id}"}))
-        return 1
-
-    url = target.get("url", "")
-    result = run_cmd(["restic", "-r", url, "snapshots", "--json"], check=False, capture_output=True)
-    if isinstance(result, str):
-        print(result)
-        return 0
-
-    print(json.dumps({"status": "error", "message": str(result)}))
-    return 1
 
 def do_status():
-    """Output current status as JSON."""
-    running = os.path.exists(LOCK_FILE)
+    running = False
     pid = 0
-    if running:
+    if os.path.exists(LOCK_FILE):
         try:
-            with open(LOCK_FILE, "r") as f:
-                pid = int(f.read().strip())
+            pid = int(open(LOCK_FILE).read().strip())
             os.kill(pid, 0)
-        except (ProcessLookupError, ValueError, FileNotFoundError):
-            running = False
-            pid = 0
-
-    print(json.dumps({
-        "running": running,
-        "pid": pid,
-    }))
+            running = True
+        except: pass
+    print(json.dumps({"running": running, "pid": pid}))
     return 0
 
 # ==============================================================================
@@ -548,12 +454,10 @@ def do_status():
 # ==============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Restic Backup Plugin Backend")
-    parser.add_argument("--backup", action="store_true", help="Run full backup")
-    parser.add_argument("--init", metavar="TARGET_ID", help="Initialize a repository")
-    parser.add_argument("--test", metavar="TARGET_ID", help="Test connection to a repository")
-    parser.add_argument("--snapshots", metavar="TARGET_ID", help="List snapshots for a repository")
-    parser.add_argument("--status", action="store_true", help="Show current status (JSON)")
+    parser = argparse.ArgumentParser(description="Restic Backup Plugin")
+    parser.add_argument("--backup", action="store_true", help="Run backup")
+    parser.add_argument("--job", metavar="JOB_ID", help="Run specific job only")
+    parser.add_argument("--status", action="store_true", help="Show status (JSON)")
     args = parser.parse_args()
 
     if args.status:
@@ -562,13 +466,7 @@ def main():
     config = load_config()
 
     if args.backup:
-        return do_backup(config)
-    elif args.init:
-        return do_init(config, args.init)
-    elif args.test:
-        return do_test(config, args.test)
-    elif args.snapshots:
-        return do_snapshots(config, args.snapshots)
+        return do_backup(config, args.job)
     else:
         parser.print_help()
         return 0

@@ -18,36 +18,54 @@ define('RESTIC_LOCK_FILE', '/tmp/restic-backup.lock');
 function restic_default_config(): array {
     return [
         'general' => [
-            'password_mode'    => 'file',
-            'password_file'    => '',
-            'password_inline'  => '',
-            'hostname'         => '',
-            'tags'             => '',
-            'max_retries'      => 3,
-            'retry_wait'       => 30,
-            'check_enabled'    => false,
-            'check_percentage' => '2%',
-            'check_schedule'   => 'sunday',
+            'password_mode'   => 'file',
+            'password_file'   => '',
+            'password_inline' => '',
+            'hostname'        => '',
+            'notifications'   => true,
         ],
+        'jobs' => [],
+    ];
+}
+
+/**
+ * Returns a default job structure.
+ */
+function restic_default_job(): array {
+    return [
+        'id'      => restic_generate_id(),
+        'name'    => '',
+        'enabled' => true,
         'targets' => [],
         'sources' => [],
+        'zfs' => [
+            'enabled'        => false,
+            'datasets'       => [],
+            'recursive'      => true,
+            'snapshot_prefix' => 'restic-backup',
+        ],
         'excludes' => [
             'global'   => [],
             'optional' => [],
         ],
-        'zfs' => [
-            'enabled'         => false,
-            'datasets'        => [],
-            'recursive'       => true,
-            'snapshot_prefix'  => 'restic-backup',
+        'retention' => [
+            'keep_daily'   => 7,
+            'keep_weekly'  => 4,
+            'keep_monthly' => 0,
+            'keep_yearly'  => 0,
         ],
         'schedule' => [
             'enabled' => false,
             'cron'    => '',
         ],
-        'notifications' => [
-            'enabled' => true,
+        'check' => [
+            'enabled'    => false,
+            'percentage' => '2%',
+            'schedule'   => 'sunday',
         ],
+        'max_retries' => 3,
+        'retry_wait'  => 30,
+        'tags'        => '',
     ];
 }
 
@@ -59,11 +77,24 @@ function restic_load_config(): array {
         return restic_default_config();
     }
     $json = file_get_contents(RESTIC_CONFIG_FILE);
+    if ($json === false) {
+        return restic_default_config();
+    }
     $config = json_decode($json, true);
     if (!is_array($config)) {
         return restic_default_config();
     }
-    return array_replace_recursive(restic_default_config(), $config);
+    // Ensure general defaults exist
+    $defaults = restic_default_config();
+    if (!isset($config['general'])) {
+        $config['general'] = $defaults['general'];
+    } else {
+        $config['general'] = array_merge($defaults['general'], $config['general']);
+    }
+    if (!isset($config['jobs']) || !is_array($config['jobs'])) {
+        $config['jobs'] = [];
+    }
+    return $config;
 }
 
 /**
@@ -71,14 +102,18 @@ function restic_load_config(): array {
  */
 function restic_save_config(array $config): bool {
     if (!is_dir(RESTIC_CONFIG_DIR)) {
-        mkdir(RESTIC_CONFIG_DIR, 0755, true);
+        @mkdir(RESTIC_CONFIG_DIR, 0755, true);
     }
     $json = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-    return file_put_contents(RESTIC_CONFIG_FILE, $json) !== false;
+    if ($json === false) {
+        return false;
+    }
+    $result = @file_put_contents(RESTIC_CONFIG_FILE, $json);
+    return $result !== false;
 }
 
 /**
- * Generate a simple unique ID for targets/sources.
+ * Generate a simple unique ID.
  */
 function restic_generate_id(): string {
     return bin2hex(random_bytes(8));
@@ -132,29 +167,70 @@ function restic_read_log(int $lines = 100): string {
         return '';
     }
     $output = [];
-    exec("tail -n {$lines} " . escapeshellarg($logfile), $output);
+    exec("tail -n " . intval($lines) . " " . escapeshellarg($logfile), $output);
     return implode("\n", $output);
 }
 
 /**
- * Updates the cron schedule based on config.
+ * Updates all cron schedules from jobs.
  */
 function restic_update_cron(array $config): void {
     $cron_file = '/etc/cron.d/restic-backup';
-    if ($config['schedule']['enabled'] && !empty($config['schedule']['cron'])) {
-        $cron_expr = $config['schedule']['cron'];
-        $line = "{$cron_expr} root /usr/bin/python3 " . RESTIC_SCRIPT . " --backup > /dev/null 2>&1\n";
-        file_put_contents($cron_file, $line);
+    $lines = [];
+    foreach ($config['jobs'] as $job) {
+        if (!empty($job['schedule']['enabled']) && !empty($job['schedule']['cron']) && !empty($job['enabled'])) {
+            $cron_expr = $job['schedule']['cron'];
+            $job_id = $job['id'];
+            $lines[] = "{$cron_expr} root /usr/bin/python3 " . RESTIC_SCRIPT . " --backup --job {$job_id}";
+        }
+    }
+    if (!empty($lines)) {
+        @file_put_contents($cron_file, implode("\n", $lines) . "\n");
     } else {
         @unlink($cron_file);
     }
 }
 
 /**
- * Sanitize a config value received from POST.
+ * List directories at a given path.
  */
-function restic_sanitize_path(string $path): string {
-    $path = trim($path);
-    $path = str_replace(['..', "\0"], '', $path);
-    return $path;
+function restic_list_dirs(string $path): array {
+    $path = rtrim($path, '/');
+    if (!is_dir($path)) {
+        return [];
+    }
+    $dirs = [];
+    $items = @scandir($path);
+    if ($items === false) {
+        return [];
+    }
+    foreach ($items as $item) {
+        if ($item === '.' || $item === '..') continue;
+        $full = $path . '/' . $item;
+        if (is_dir($full) && $item[0] !== '.') {
+            $dirs[] = $full;
+        }
+    }
+    sort($dirs);
+    return $dirs;
+}
+
+/**
+ * List ZFS datasets.
+ */
+function restic_list_zfs_datasets(): array {
+    $output = [];
+    exec('zfs list -H -t filesystem -o name 2>/dev/null', $output, $ret);
+    if ($ret !== 0) {
+        return [];
+    }
+    $datasets = [];
+    foreach ($output as $line) {
+        $name = trim($line);
+        if ($name !== '') {
+            $datasets[] = $name;
+        }
+    }
+    sort($datasets);
+    return $datasets;
 }

@@ -1,13 +1,12 @@
 <?php
 /**
  * Restic Backup Plugin - AJAX Endpoint
- * Handles all async actions from the GUI.
  */
 require_once '/usr/local/emhttp/plugins/restic-backup/include/helpers.php';
 
-header('Content-Type: application/json');
+header('Content-Type: application/json; charset=utf-8');
 
-$action = $_GET['action'] ?? '';
+$action = $_GET['action'] ?? $_POST['action'] ?? '';
 
 switch ($action) {
 
@@ -20,25 +19,24 @@ switch ($action) {
 
         if (!is_array($config)) {
             http_response_code(400);
-            echo json_encode(['error' => 'Invalid JSON']);
+            echo json_encode(['status' => 'error', 'message' => 'Invalid JSON: ' . json_last_error_msg()]);
             break;
         }
 
-        // Merge with defaults so we don't lose structure
-        $merged = array_replace_recursive(restic_default_config(), $config);
+        // Ensure structure
+        if (!isset($config['general'])) {
+            $config['general'] = restic_default_config()['general'];
+        }
+        if (!isset($config['jobs']) || !is_array($config['jobs'])) {
+            $config['jobs'] = [];
+        }
 
-        // Overwrite arrays (array_replace_recursive merges arrays by index, not what we want)
-        $merged['targets']  = $config['targets'] ?? [];
-        $merged['sources']  = $config['sources'] ?? [];
-        $merged['excludes'] = $config['excludes'] ?? ['global' => [], 'optional' => []];
-        $merged['zfs']['datasets'] = $config['zfs']['datasets'] ?? [];
-
-        if (restic_save_config($merged)) {
-            restic_update_cron($merged);
-            echo json_encode(['status' => 'success']);
+        if (restic_save_config($config)) {
+            restic_update_cron($config);
+            echo json_encode(['status' => 'success', 'message' => 'Configuration saved']);
         } else {
             http_response_code(500);
-            echo json_encode(['error' => 'Could not write config file']);
+            echo json_encode(['status' => 'error', 'message' => 'Could not write config. Check permissions on ' . RESTIC_CONFIG_DIR]);
         }
         break;
 
@@ -51,11 +49,13 @@ switch ($action) {
             break;
         }
 
+        $job_id = $_GET['job_id'] ?? '';
         $cmd = '/usr/bin/python3 ' . escapeshellarg(RESTIC_SCRIPT) . ' --backup';
+        if ($job_id) {
+            $cmd .= ' --job ' . escapeshellarg($job_id);
+        }
         $logfile = restic_log_file();
         exec("nohup {$cmd} >> " . escapeshellarg($logfile) . " 2>&1 &");
-
-        // Brief wait to let the process start and create its PID file
         usleep(500000);
 
         echo json_encode(['status' => 'started']);
@@ -68,7 +68,6 @@ switch ($action) {
         $pid = restic_get_pid();
         if ($pid > 0) {
             posix_kill($pid, SIGTERM);
-            // Wait briefly, then force if still running
             usleep(500000);
             if (file_exists("/proc/{$pid}")) {
                 posix_kill($pid, SIGKILL);
@@ -82,62 +81,71 @@ switch ($action) {
         break;
 
     // =========================================================================
-    // INIT REPO
+    // INIT REPO (URL passed directly, no saved config required)
     // =========================================================================
     case 'init':
-        $target_id = $_GET['target_id'] ?? '';
-        if (!$target_id) {
-            echo json_encode(['status' => 'error', 'message' => 'No target_id provided']);
+        $input = json_decode(file_get_contents('php://input'), true);
+        $url = $input['url'] ?? '';
+        $pw_mode = $input['password_mode'] ?? 'file';
+        $pw_file = $input['password_file'] ?? '';
+        $pw_inline = $input['password_inline'] ?? '';
+
+        if (!$url) {
+            echo json_encode(['status' => 'error', 'message' => 'No repository URL provided']);
             break;
         }
 
-        $cmd = '/usr/bin/python3 ' . escapeshellarg(RESTIC_SCRIPT)
-             . ' --init ' . escapeshellarg($target_id);
-        $output = [];
-        exec($cmd . ' 2>&1', $output, $ret);
-
-        $result_text = implode("\n", $output);
-        // Try to parse JSON from script output
-        foreach ($output as $line) {
-            $parsed = json_decode($line, true);
-            if (is_array($parsed) && isset($parsed['status'])) {
-                echo json_encode($parsed);
-                break 2;
-            }
+        $env = '';
+        if ($pw_mode === 'file' && $pw_file) {
+            $env = 'RESTIC_PASSWORD_FILE=' . escapeshellarg($pw_file);
+        } elseif ($pw_mode === 'inline' && $pw_inline) {
+            $env = 'RESTIC_PASSWORD=' . escapeshellarg($pw_inline);
         }
-        echo json_encode([
-            'status' => $ret === 0 ? 'success' : 'error',
-            'message' => $result_text
-        ]);
+
+        $cmd = "{$env} restic -r " . escapeshellarg($url) . " init 2>&1";
+        $output = [];
+        exec($cmd, $output, $ret);
+        $text = implode("\n", $output);
+
+        if ($ret === 0 || stripos($text, 'already') !== false) {
+            echo json_encode(['status' => 'success', 'message' => $text ?: 'Repository initialized']);
+        } else {
+            echo json_encode(['status' => 'error', 'message' => $text ?: 'Init failed (exit code ' . $ret . ')']);
+        }
         break;
 
     // =========================================================================
-    // TEST CONNECTION
+    // TEST CONNECTION (URL passed directly)
     // =========================================================================
     case 'test':
-        $target_id = $_GET['target_id'] ?? '';
-        if (!$target_id) {
-            echo json_encode(['status' => 'error', 'message' => 'No target_id provided']);
+        $input = json_decode(file_get_contents('php://input'), true);
+        $url = $input['url'] ?? '';
+        $pw_mode = $input['password_mode'] ?? 'file';
+        $pw_file = $input['password_file'] ?? '';
+        $pw_inline = $input['password_inline'] ?? '';
+
+        if (!$url) {
+            echo json_encode(['status' => 'error', 'message' => 'No repository URL provided']);
             break;
         }
 
-        $cmd = '/usr/bin/python3 ' . escapeshellarg(RESTIC_SCRIPT)
-             . ' --test ' . escapeshellarg($target_id);
-        $output = [];
-        exec($cmd . ' 2>&1', $output, $ret);
-
-        $result_text = implode("\n", $output);
-        foreach ($output as $line) {
-            $parsed = json_decode($line, true);
-            if (is_array($parsed) && isset($parsed['status'])) {
-                echo json_encode($parsed);
-                break 2;
-            }
+        $env = '';
+        if ($pw_mode === 'file' && $pw_file) {
+            $env = 'RESTIC_PASSWORD_FILE=' . escapeshellarg($pw_file);
+        } elseif ($pw_mode === 'inline' && $pw_inline) {
+            $env = 'RESTIC_PASSWORD=' . escapeshellarg($pw_inline);
         }
-        echo json_encode([
-            'status' => $ret === 0 ? 'success' : 'error',
-            'message' => $result_text
-        ]);
+
+        $cmd = "{$env} restic -r " . escapeshellarg($url) . " snapshots --latest 1 2>&1";
+        $output = [];
+        exec($cmd, $output, $ret);
+        $text = implode("\n", $output);
+
+        if ($ret === 0) {
+            echo json_encode(['status' => 'success', 'message' => 'Connection OK']);
+        } else {
+            echo json_encode(['status' => 'error', 'message' => $text ?: 'Connection failed (exit code ' . $ret . ')']);
+        }
         break;
 
     // =========================================================================
@@ -154,25 +162,70 @@ switch ($action) {
     // LOG
     // =========================================================================
     case 'log':
-        header('Content-Type: text/plain');
+        header('Content-Type: text/plain; charset=utf-8');
         echo restic_read_log(200);
+        break;
+
+    // =========================================================================
+    // BROWSE DIRECTORIES
+    // =========================================================================
+    case 'browse':
+        $path = $_GET['path'] ?? '/mnt';
+        $path = str_replace(['..', "\0"], '', $path);
+        if (!$path || $path[0] !== '/') {
+            $path = '/mnt';
+        }
+        $dirs = restic_list_dirs($path);
+        echo json_encode([
+            'current' => $path,
+            'parent'  => dirname($path),
+            'dirs'    => $dirs,
+        ]);
+        break;
+
+    // =========================================================================
+    // LIST ZFS DATASETS
+    // =========================================================================
+    case 'datasets':
+        $datasets = restic_list_zfs_datasets();
+        echo json_encode([
+            'available' => !empty($datasets),
+            'datasets'  => $datasets,
+        ]);
         break;
 
     // =========================================================================
     // SNAPSHOTS
     // =========================================================================
     case 'snapshots':
-        $target_id = $_GET['target_id'] ?? '';
-        if (!$target_id) {
-            echo json_encode(['status' => 'error', 'message' => 'No target_id provided']);
+        $input = json_decode(file_get_contents('php://input'), true);
+        $url = $input['url'] ?? '';
+        $pw_mode = $input['password_mode'] ?? 'file';
+        $pw_file = $input['password_file'] ?? '';
+        $pw_inline = $input['password_inline'] ?? '';
+
+        if (!$url) {
+            echo json_encode(['status' => 'error', 'message' => 'No repository URL provided']);
             break;
         }
 
-        $cmd = '/usr/bin/python3 ' . escapeshellarg(RESTIC_SCRIPT)
-             . ' --snapshots ' . escapeshellarg($target_id);
+        $env = '';
+        if ($pw_mode === 'file' && $pw_file) {
+            $env = 'RESTIC_PASSWORD_FILE=' . escapeshellarg($pw_file);
+        } elseif ($pw_mode === 'inline' && $pw_inline) {
+            $env = 'RESTIC_PASSWORD=' . escapeshellarg($pw_inline);
+        }
+
+        $cmd = "{$env} restic -r " . escapeshellarg($url) . " snapshots --json 2>&1";
         $output = [];
-        exec($cmd . ' 2>&1', $output, $ret);
-        echo implode("\n", $output);
+        exec($cmd, $output, $ret);
+        $text = implode("\n", $output);
+
+        if ($ret === 0) {
+            echo $text;
+        } else {
+            echo json_encode(['status' => 'error', 'message' => $text]);
+        }
         break;
 
     // =========================================================================
@@ -180,6 +233,6 @@ switch ($action) {
     // =========================================================================
     default:
         http_response_code(400);
-        echo json_encode(['error' => 'Unknown action: ' . $action]);
+        echo json_encode(['status' => 'error', 'message' => 'Unknown action: ' . $action]);
         break;
 }

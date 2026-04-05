@@ -1,464 +1,377 @@
 <?php
 /**
- * Restic Backup Plugin - Main GUI Page
- * Single page with collapsible sections.
+ * Restic Backup Plugin - Main GUI
+ * Job-based architecture with collapsible sections.
  */
 require_once '/usr/local/emhttp/plugins/restic-backup/include/helpers.php';
 
 $config = restic_load_config();
 $running = restic_is_running();
+$jobs = $config['jobs'] ?? [];
 ?>
 
 <link type="text/css" rel="stylesheet" href="<?autov('/webGui/styles/jquery.ui.css')?>">
 <style>
-.restic-section {
-    margin-bottom: 16px;
-    border: 1px solid #2a2a2a;
-    border-radius: 4px;
-}
-.restic-section-header {
-    background: #1c1c1c;
-    padding: 10px 16px;
-    cursor: pointer;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-weight: bold;
-    font-size: 1.1em;
-}
-.restic-section-header:hover {
-    background: #252525;
-}
-.restic-section-header .toggle-icon {
-    transition: transform 0.2s;
-}
-.restic-section-header.collapsed .toggle-icon {
-    transform: rotate(-90deg);
-}
-.restic-section-body {
-    padding: 16px;
-}
-.restic-section-body.hidden {
-    display: none;
-}
-.restic-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 8px;
-    flex-wrap: wrap;
-}
-.restic-row label {
-    min-width: 180px;
-    font-weight: bold;
-}
-.restic-row input[type="text"],
-.restic-row input[type="number"],
-.restic-row select {
-    flex: 1;
-    min-width: 200px;
-    max-width: 500px;
-}
-.restic-row .hint {
-    color: #888;
-    font-size: 0.85em;
-    width: 100%;
-    margin-left: 190px;
-}
-.restic-list-item {
-    background: #1a1a1a;
-    border: 1px solid #333;
-    border-radius: 4px;
-    padding: 12px;
-    margin-bottom: 8px;
-}
-.restic-list-item .item-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 8px;
-}
-.restic-list-item .item-header .item-title {
-    font-weight: bold;
-}
-.restic-btn {
-    padding: 6px 16px;
-    border: none;
-    border-radius: 3px;
-    cursor: pointer;
-    font-size: 0.9em;
-}
-.restic-btn-primary {
-    background: #ff8c2f;
-    color: #fff;
-}
-.restic-btn-primary:hover {
-    background: #e67a20;
-}
-.restic-btn-danger {
-    background: #c0392b;
-    color: #fff;
-}
-.restic-btn-danger:hover {
-    background: #a93226;
-}
-.restic-btn-secondary {
-    background: #444;
-    color: #fff;
-}
-.restic-btn-secondary:hover {
-    background: #555;
-}
-.restic-btn-success {
-    background: #27ae60;
-    color: #fff;
-}
-.restic-btn-success:hover {
-    background: #219a52;
-}
-textarea.restic-excludes {
-    width: 100%;
-    max-width: 700px;
-    height: 150px;
-    font-family: monospace;
-    font-size: 0.9em;
-    background: #111;
-    color: #ddd;
-    border: 1px solid #444;
-    padding: 8px;
-    resize: vertical;
-}
-#restic-log {
-    background: #111;
-    color: #0f0;
-    font-family: monospace;
-    font-size: 0.85em;
-    padding: 12px;
-    height: 400px;
-    overflow-y: auto;
-    white-space: pre-wrap;
-    border: 1px solid #333;
-    border-radius: 4px;
-}
-.restic-status-badge {
-    display: inline-block;
-    padding: 3px 10px;
-    border-radius: 3px;
-    font-weight: bold;
-    font-size: 0.85em;
-}
-.restic-status-idle { background: #27ae60; color: #fff; }
-.restic-status-running { background: #f39c12; color: #fff; }
+:root { --accent: #ff8c2f; --accent-hover: #e67a20; --green: #27ae60; --red: #c0392b; --bg-card: #1c1c1c; --bg-input: #111; --border: #333; --text: #ddd; --text-muted: #888; }
+.rb-wrap { max-width: 1100px; }
+.rb-section { margin-bottom: 12px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.rb-section-hdr { background: var(--bg-card); padding: 10px 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 1.05em; user-select: none; }
+.rb-section-hdr:hover { background: #252525; }
+.rb-section-hdr .arr { transition: transform .2s; font-size: .8em; }
+.rb-section-hdr.closed .arr { transform: rotate(-90deg); }
+.rb-section-body { padding: 14px 16px; }
+.rb-section-body.hidden { display: none; }
+.rb-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.rb-row label { min-width: 170px; font-weight: bold; flex-shrink: 0; }
+.rb-row input[type="text"], .rb-row input[type="number"], .rb-row select { flex: 1; min-width: 180px; max-width: 480px; padding: 5px 8px; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 3px; }
+.rb-hint { color: var(--text-muted); font-size: .82em; width: 100%; padding-left: 180px; }
+
+/* Buttons */
+.rb-btn { padding: 5px 14px; border: none; border-radius: 3px; cursor: pointer; font-size: .88em; color: #fff; }
+.rb-btn-accent { background: var(--accent); } .rb-btn-accent:hover { background: var(--accent-hover); }
+.rb-btn-green { background: var(--green); } .rb-btn-green:hover { background: #219a52; }
+.rb-btn-red { background: var(--red); } .rb-btn-red:hover { background: #a93226; }
+.rb-btn-gray { background: #444; } .rb-btn-gray:hover { background: #555; }
+.rb-btn-sm { padding: 3px 10px; font-size: .82em; }
+
+/* Job Tabs */
+.rb-job-tabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+.rb-job-tab { padding: 6px 16px; background: #333; border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; cursor: pointer; color: var(--text-muted); font-weight: bold; }
+.rb-job-tab.active { background: var(--bg-card); color: var(--accent); border-color: var(--accent); }
+.rb-job-tab:hover { color: #fff; }
+
+/* Cards */
+.rb-card { background: #1a1a1a; border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin-bottom: 8px; }
+.rb-card-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.rb-card-title { font-weight: bold; color: var(--accent); }
+
+/* Log */
+#rb-log { background: var(--bg-input); color: #0f0; font-family: monospace; font-size: .82em; padding: 10px; height: 350px; overflow-y: auto; white-space: pre-wrap; border: 1px solid var(--border); border-radius: 4px; }
+
+/* Status */
+.rb-badge { display: inline-block; padding: 2px 10px; border-radius: 3px; font-weight: bold; font-size: .82em; }
+.rb-badge-idle { background: var(--green); color: #fff; }
+.rb-badge-run { background: #f39c12; color: #fff; }
+
+/* Excludes */
+textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family: monospace; font-size: .88em; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); padding: 8px; resize: vertical; border-radius: 3px; }
+
+/* Browse modal */
+.rb-modal-bg { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,.6); z-index: 9998; }
+.rb-modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); background: #222; border: 1px solid var(--border); border-radius: 8px; padding: 20px; z-index: 9999; min-width: 400px; max-width: 600px; max-height: 70vh; overflow-y: auto; }
+.rb-modal h3 { margin: 0 0 12px 0; }
+.rb-modal .rb-dir-item { padding: 6px 10px; cursor: pointer; border-radius: 3px; }
+.rb-modal .rb-dir-item:hover { background: #333; }
+
+/* Dataset picker */
+.rb-ds-list { max-height: 250px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; padding: 6px; background: var(--bg-input); }
+.rb-ds-item { padding: 3px 6px; display: flex; align-items: center; gap: 6px; }
+.rb-ds-item.child { padding-left: 24px; }
+.rb-ds-item label { min-width: auto; font-weight: normal; cursor: pointer; }
+
+/* Retention row */
+.rb-retention-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+.rb-retention-grid label { min-width: auto; }
+.rb-retention-grid input { width: 60px; }
 </style>
 
-<!-- ============================================================ -->
+<div class="rb-wrap">
+
+<!-- ================================================================ -->
 <!-- STATUS & CONTROL -->
-<!-- ============================================================ -->
-<div class="restic-section">
-    <div class="restic-section-header" onclick="toggleSection(this)">
-        <span>Status &amp; Control</span>
-        <span class="toggle-icon">&#9660;</span>
+<!-- ================================================================ -->
+<div class="rb-section">
+    <div class="rb-section-hdr" onclick="rbToggle(this)">
+        <span>Status &amp; Control</span><span class="arr">&#9660;</span>
     </div>
-    <div class="restic-section-body">
-        <div class="restic-row">
+    <div class="rb-section-body">
+        <div class="rb-row">
             <label>Status:</label>
-            <span id="restic-status-badge" class="restic-status-badge <?= $running ? 'restic-status-running' : 'restic-status-idle' ?>">
-                <?= $running ? 'RUNNING' : 'IDLE' ?>
-            </span>
+            <span id="rb-status" class="rb-badge <?= $running ? 'rb-badge-run' : 'rb-badge-idle' ?>"><?= $running ? 'RUNNING' : 'IDLE' ?></span>
         </div>
-        <div class="restic-row" style="margin-top:12px;">
-            <button id="btn-start" class="restic-btn restic-btn-success" onclick="startBackup()" <?= $running ? 'disabled' : '' ?>>Start Backup Now</button>
-            <button id="btn-stop" class="restic-btn restic-btn-danger" onclick="stopBackup()" <?= !$running ? 'disabled' : '' ?>>Stop Backup</button>
-            <button class="restic-btn restic-btn-secondary" onclick="refreshLog()">Refresh Log</button>
+        <div class="rb-row" style="margin-top:10px;gap:6px;">
+            <button id="btn-start" class="rb-btn rb-btn-green" onclick="rbStartBackup()" <?= $running ? 'disabled' : '' ?>>Start Backup</button>
+            <button id="btn-stop" class="rb-btn rb-btn-red" onclick="rbStopBackup()" <?= !$running ? 'disabled' : '' ?>>Stop</button>
+            <select id="rb-job-select" style="padding:5px;">
+                <option value="">All Jobs</option>
+                <?php foreach ($jobs as $j): ?>
+                <option value="<?= htmlspecialchars($j['id']) ?>"><?= htmlspecialchars($j['name'] ?: 'Unnamed') ?></option>
+                <?php endforeach; ?>
+            </select>
+            <button class="rb-btn rb-btn-gray" onclick="rbRefreshLog()">Refresh Log</button>
         </div>
-        <div style="margin-top:12px;">
-            <div id="restic-log">No log data yet. Start a backup or click "Refresh Log".</div>
+        <div style="margin-top:10px;">
+            <div id="rb-log">Click "Refresh Log" or start a backup.</div>
         </div>
     </div>
 </div>
 
-<!-- ============================================================ -->
+<!-- ================================================================ -->
 <!-- GENERAL SETTINGS -->
-<!-- ============================================================ -->
-<div class="restic-section">
-    <div class="restic-section-header collapsed" onclick="toggleSection(this)">
-        <span>General Settings</span>
-        <span class="toggle-icon">&#9660;</span>
+<!-- ================================================================ -->
+<div class="rb-section">
+    <div class="rb-section-hdr closed" onclick="rbToggle(this)">
+        <span>General Settings</span><span class="arr">&#9660;</span>
     </div>
-    <div class="restic-section-body hidden">
-        <div class="restic-row">
+    <div class="rb-section-body hidden">
+        <div class="rb-row">
             <label>Password Mode:</label>
-            <select id="cfg-password-mode" onchange="togglePasswordFields()">
-                <option value="file" <?= $config['general']['password_mode'] === 'file' ? 'selected' : '' ?>>Password File</option>
-                <option value="inline" <?= $config['general']['password_mode'] === 'inline' ? 'selected' : '' ?>>Inline Password</option>
+            <select id="cfg-pw-mode" onchange="rbTogglePw()">
+                <option value="file" <?= ($config['general']['password_mode'] ?? '') === 'file' ? 'selected' : '' ?>>Password File</option>
+                <option value="inline" <?= ($config['general']['password_mode'] ?? '') === 'inline' ? 'selected' : '' ?>>Inline Password</option>
             </select>
         </div>
-        <div class="restic-row" id="row-password-file">
-            <label>Password File Path:</label>
-            <input type="text" id="cfg-password-file" value="<?= htmlspecialchars($config['general']['password_file']) ?>" placeholder="/mnt/user/appdata/restic/password.txt">
+        <div class="rb-row" id="row-pw-file">
+            <label>Password File:</label>
+            <input type="text" id="cfg-pw-file" value="<?= htmlspecialchars($config['general']['password_file'] ?? '') ?>" placeholder="/mnt/user/appdata/restic/password.txt">
         </div>
-        <div class="restic-row" id="row-password-inline" style="display:none;">
+        <div class="rb-row" id="row-pw-inline" style="display:none;">
             <label>Password:</label>
-            <input type="text" id="cfg-password-inline" value="<?= htmlspecialchars($config['general']['password_inline']) ?>" placeholder="Enter restic repository password">
+            <input type="text" id="cfg-pw-inline" value="<?= htmlspecialchars($config['general']['password_inline'] ?? '') ?>" placeholder="Repository password">
         </div>
-        <div class="restic-row">
+        <div class="rb-row">
             <label>Hostname:</label>
-            <input type="text" id="cfg-hostname" value="<?= htmlspecialchars($config['general']['hostname']) ?>" placeholder="e.g. my-unraid-server">
-            <span class="hint">Used as --host in restic. Leave empty to use system hostname.</span>
+            <input type="text" id="cfg-hostname" value="<?= htmlspecialchars($config['general']['hostname'] ?? '') ?>" placeholder="e.g. my-unraid">
+            <span class="rb-hint">Used as --host in restic. Leave empty for system hostname.</span>
         </div>
-        <div class="restic-row">
-            <label>Tags:</label>
-            <input type="text" id="cfg-tags" value="<?= htmlspecialchars($config['general']['tags']) ?>" placeholder="e.g. unraid,full">
-            <span class="hint">Comma-separated tags applied to all snapshots.</span>
-        </div>
-        <div class="restic-row">
-            <label>Max Retries:</label>
-            <input type="number" id="cfg-max-retries" value="<?= (int)$config['general']['max_retries'] ?>" min="1" max="10" style="max-width:80px;">
-        </div>
-        <div class="restic-row">
-            <label>Retry Wait (seconds):</label>
-            <input type="number" id="cfg-retry-wait" value="<?= (int)$config['general']['retry_wait'] ?>" min="5" max="300" style="max-width:80px;">
-        </div>
-        <hr>
-        <div class="restic-row">
-            <label>Integrity Check:</label>
-            <select id="cfg-check-enabled">
-                <option value="0" <?= !$config['general']['check_enabled'] ? 'selected' : '' ?>>Disabled</option>
-                <option value="1" <?= $config['general']['check_enabled'] ? 'selected' : '' ?>>Enabled</option>
-            </select>
-        </div>
-        <div class="restic-row">
-            <label>Check Data Percentage:</label>
-            <input type="text" id="cfg-check-percentage" value="<?= htmlspecialchars($config['general']['check_percentage']) ?>" placeholder="2%" style="max-width:80px;">
-        </div>
-        <div class="restic-row">
-            <label>Check Schedule:</label>
-            <select id="cfg-check-schedule">
-                <option value="sunday" <?= $config['general']['check_schedule'] === 'sunday' ? 'selected' : '' ?>>Every Sunday</option>
-                <option value="monthly" <?= $config['general']['check_schedule'] === 'monthly' ? 'selected' : '' ?>>First of Month</option>
-                <option value="always" <?= $config['general']['check_schedule'] === 'always' ? 'selected' : '' ?>>Every Backup</option>
-            </select>
-        </div>
-        <hr>
-        <div class="restic-row">
-            <label>Unraid Notifications:</label>
-            <select id="cfg-notifications">
-                <option value="1" <?= $config['notifications']['enabled'] ? 'selected' : '' ?>>Enabled</option>
-                <option value="0" <?= !$config['notifications']['enabled'] ? 'selected' : '' ?>>Disabled</option>
+        <div class="rb-row">
+            <label>Notifications:</label>
+            <select id="cfg-notify">
+                <option value="1" <?= ($config['general']['notifications'] ?? true) ? 'selected' : '' ?>>Enabled</option>
+                <option value="0" <?= !($config['general']['notifications'] ?? true) ? 'selected' : '' ?>>Disabled</option>
             </select>
         </div>
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- BACKUP TARGETS -->
-<!-- ============================================================ -->
-<div class="restic-section">
-    <div class="restic-section-header collapsed" onclick="toggleSection(this)">
-        <span>Backup Targets</span>
-        <span class="toggle-icon">&#9660;</span>
+<!-- ================================================================ -->
+<!-- BACKUP JOBS -->
+<!-- ================================================================ -->
+<div class="rb-section">
+    <div class="rb-section-hdr" onclick="rbToggle(this)">
+        <span>Backup Jobs</span><span class="arr">&#9660;</span>
     </div>
-    <div class="restic-section-body hidden">
-        <p style="color:#888;margin-bottom:12px;">Define where your backups are stored. Each target is a restic repository.</p>
-        <div id="targets-list">
-            <?php foreach ($config['targets'] as $i => $t): ?>
-            <div class="restic-list-item" data-id="<?= htmlspecialchars($t['id']) ?>">
-                <div class="item-header">
-                    <span class="item-title">Target #<?= $i + 1 ?></span>
-                    <div>
-                        <button class="restic-btn restic-btn-secondary" onclick="initRepo(this)" title="Initialize Repository">Init Repo</button>
-                        <button class="restic-btn restic-btn-secondary" onclick="testTarget(this)" title="Test Connection">Test</button>
-                        <button class="restic-btn restic-btn-danger" onclick="removeListItem(this)">Remove</button>
+    <div class="rb-section-body">
+        <div class="rb-job-tabs" id="rb-job-tabs">
+            <?php foreach ($jobs as $i => $j): ?>
+            <div class="rb-job-tab <?= $i === 0 ? 'active' : '' ?>" onclick="rbSwitchJob(<?= $i ?>)"><?= htmlspecialchars($j['name'] ?: 'Job ' . ($i+1)) ?></div>
+            <?php endforeach; ?>
+            <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbAddJob()">+ Add Job</button>
+        </div>
+
+        <div id="rb-jobs-container">
+            <?php foreach ($jobs as $i => $j): ?>
+            <div class="rb-job-panel" data-job-idx="<?= $i ?>" style="<?= $i > 0 ? 'display:none;' : '' ?>">
+
+                <!-- Job Header -->
+                <div class="rb-row">
+                    <label>Job Name:</label>
+                    <input type="text" class="job-name" value="<?= htmlspecialchars($j['name'] ?? '') ?>" placeholder="e.g. Daily Backup">
+                    <select class="job-enabled"><option value="1" <?= ($j['enabled'] ?? true) ? 'selected' : '' ?>>Enabled</option><option value="0" <?= !($j['enabled'] ?? true) ? 'selected' : '' ?>>Disabled</option></select>
+                    <button class="rb-btn rb-btn-red rb-btn-sm" onclick="rbRemoveJob(this)">Delete Job</button>
+                </div>
+
+                <!-- TARGETS -->
+                <div class="rb-section" style="margin-top:10px;">
+                    <div class="rb-section-hdr" onclick="rbToggle(this)"><span>Targets</span><span class="arr">&#9660;</span></div>
+                    <div class="rb-section-body">
+                        <div class="job-targets">
+                            <?php foreach (($j['targets'] ?? []) as $ti => $t): ?>
+                            <div class="rb-card" data-id="<?= htmlspecialchars($t['id'] ?? '') ?>">
+                                <div class="rb-card-hdr">
+                                    <span class="rb-card-title">Target #<?= $ti+1 ?></span>
+                                    <div style="display:flex;gap:4px;">
+                                        <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbInitRepo(this)">Init Repo</button>
+                                        <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbTestTarget(this)">Test</button>
+                                        <button class="rb-btn rb-btn-red rb-btn-sm" onclick="this.closest('.rb-card').remove()">Remove</button>
+                                    </div>
+                                </div>
+                                <div class="rb-row">
+                                    <label>Type:</label>
+                                    <select class="target-type" onchange="rbTargetTypeChange(this)">
+                                        <option value="local" <?= ($t['type'] ?? '') === 'local' ? 'selected' : '' ?>>Local Path</option>
+                                        <option value="sftp" <?= ($t['type'] ?? '') === 'sftp' ? 'selected' : '' ?>>SFTP</option>
+                                        <option value="s3" <?= ($t['type'] ?? '') === 's3' ? 'selected' : '' ?>>S3 / Minio</option>
+                                        <option value="b2" <?= ($t['type'] ?? '') === 'b2' ? 'selected' : '' ?>>Backblaze B2</option>
+                                        <option value="rest" <?= ($t['type'] ?? '') === 'rest' ? 'selected' : '' ?>>REST Server</option>
+                                        <option value="rclone" <?= ($t['type'] ?? '') === 'rclone' ? 'selected' : '' ?>>Rclone</option>
+                                    </select>
+                                </div>
+                                <div class="rb-row">
+                                    <label>Repository URL:</label>
+                                    <input type="text" class="target-url" value="<?= htmlspecialchars($t['url'] ?? '') ?>" placeholder="<?= ($t['type'] ?? 'local') === 'local' ? '/mnt/disks/backup/restic' : 'sftp://user@host:/path' ?>">
+                                    <?php if (($t['type'] ?? 'local') === 'local'): ?>
+                                    <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbBrowse(this.closest('.rb-card').querySelector('.target-url'))">Browse</button>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="rb-row">
+                                    <label>Name:</label>
+                                    <input type="text" class="target-name" value="<?= htmlspecialchars($t['name'] ?? '') ?>" placeholder="e.g. Hetzner Cloud">
+                                </div>
+                                <div class="rb-row">
+                                    <label>Optional Excludes:</label>
+                                    <select class="target-opt-exc"><option value="0" <?= !($t['use_optional_excludes'] ?? false) ? 'selected' : '' ?>>No</option><option value="1" <?= ($t['use_optional_excludes'] ?? false) ? 'selected' : '' ?>>Yes</option></select>
+                                </div>
+                                <div class="rb-row">
+                                    <label>Enabled:</label>
+                                    <select class="target-enabled"><option value="1" <?= ($t['enabled'] ?? true) ? 'selected' : '' ?>>Yes</option><option value="0" <?= !($t['enabled'] ?? true) ? 'selected' : '' ?>>No</option></select>
+                                </div>
+                            </div>
+                            <?php endforeach; ?>
+                        </div>
+                        <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbAddTarget(this)">+ Add Target</button>
                     </div>
                 </div>
-                <div class="restic-row">
-                    <label>Repository URL:</label>
-                    <input type="text" class="target-url" value="<?= htmlspecialchars($t['url']) ?>" placeholder="sftp://host:/path or /mnt/disks/...">
+
+                <!-- ZFS SNAPSHOTS -->
+                <div class="rb-section">
+                    <div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>ZFS Snapshots</span><span class="arr">&#9660;</span></div>
+                    <div class="rb-section-body hidden">
+                        <p style="color:var(--text-muted);margin:0 0 10px;">Create ZFS snapshots before backup for data consistency. Cleaned up automatically after backup.</p>
+                        <div class="rb-row">
+                            <label>Enable Snapshots:</label>
+                            <select class="zfs-enabled"><option value="0" <?= !($j['zfs']['enabled'] ?? false) ? 'selected' : '' ?>>Disabled</option><option value="1" <?= ($j['zfs']['enabled'] ?? false) ? 'selected' : '' ?>>Enabled</option></select>
+                        </div>
+                        <div class="rb-row">
+                            <label>Recursive:</label>
+                            <select class="zfs-recursive"><option value="1" <?= ($j['zfs']['recursive'] ?? true) ? 'selected' : '' ?>>Yes (all child datasets)</option><option value="0" <?= !($j['zfs']['recursive'] ?? true) ? 'selected' : '' ?>>No</option></select>
+                        </div>
+                        <div class="rb-row">
+                            <label>Snapshot Prefix:</label>
+                            <input type="text" class="zfs-prefix" value="<?= htmlspecialchars($j['zfs']['snapshot_prefix'] ?? 'restic-backup') ?>" placeholder="restic-backup" style="max-width:200px;">
+                        </div>
+                        <div style="margin-top:8px;">
+                            <label style="font-weight:bold;display:block;margin-bottom:6px;">Datasets:</label>
+                            <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbLoadDatasets(this)" style="margin-bottom:8px;">Load Available Datasets</button>
+                            <div class="zfs-ds-picker rb-ds-list" style="display:none;"></div>
+                            <div class="zfs-ds-manual">
+                                <?php foreach (($j['zfs']['datasets'] ?? []) as $ds): ?>
+                                <div class="rb-row"><input type="text" class="zfs-dataset" value="<?= htmlspecialchars($ds) ?>" placeholder="cache/appdata" style="flex:1;"><button class="rb-btn rb-btn-red rb-btn-sm" onclick="this.parentElement.remove()">X</button></div>
+                                <?php endforeach; ?>
+                            </div>
+                            <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbAddDatasetInput(this)" style="margin-top:4px;">+ Add Manually</button>
+                        </div>
+                    </div>
                 </div>
-                <div class="restic-row">
-                    <label>Name:</label>
-                    <input type="text" class="target-name" value="<?= htmlspecialchars($t['name']) ?>" placeholder="e.g. Hetzner Cloud">
+
+                <!-- SOURCES -->
+                <div class="rb-section">
+                    <div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Source Directories</span><span class="arr">&#9660;</span></div>
+                    <div class="rb-section-body hidden">
+                        <p style="color:var(--text-muted);margin:0 0 10px;">Directories to include in the backup.</p>
+                        <div class="job-sources">
+                            <?php foreach (($j['sources'] ?? []) as $si => $s): ?>
+                            <div class="rb-card" data-id="<?= htmlspecialchars($s['id'] ?? '') ?>">
+                                <div class="rb-card-hdr">
+                                    <span class="rb-card-title">Source #<?= $si+1 ?></span>
+                                    <button class="rb-btn rb-btn-red rb-btn-sm" onclick="this.closest('.rb-card').remove()">Remove</button>
+                                </div>
+                                <div class="rb-row">
+                                    <label>Path:</label>
+                                    <input type="text" class="source-path" value="<?= htmlspecialchars($s['path'] ?? '') ?>" placeholder="/mnt/user/appdata">
+                                    <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbBrowse(this.closest('.rb-card').querySelector('.source-path'))">Browse</button>
+                                </div>
+                                <div class="rb-row">
+                                    <label>Label:</label>
+                                    <input type="text" class="source-label" value="<?= htmlspecialchars($s['label'] ?? '') ?>" placeholder="appdata (folder name in backup)">
+                                </div>
+                                <div class="rb-row">
+                                    <label>Enabled:</label>
+                                    <select class="source-enabled"><option value="1" <?= ($s['enabled'] ?? true) ? 'selected' : '' ?>>Yes</option><option value="0" <?= !($s['enabled'] ?? true) ? 'selected' : '' ?>>No</option></select>
+                                </div>
+                            </div>
+                            <?php endforeach; ?>
+                        </div>
+                        <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbAddSource(this)">+ Add Source</button>
+                    </div>
                 </div>
-                <div class="restic-row">
-                    <label>Use Optional Excludes:</label>
-                    <select class="target-optional-excludes">
-                        <option value="0" <?= !$t['use_optional_excludes'] ? 'selected' : '' ?>>No</option>
-                        <option value="1" <?= $t['use_optional_excludes'] ? 'selected' : '' ?>>Yes</option>
-                    </select>
+
+                <!-- EXCLUDES -->
+                <div class="rb-section">
+                    <div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Exclude Patterns</span><span class="arr">&#9660;</span></div>
+                    <div class="rb-section-body hidden">
+                        <p style="color:var(--text-muted);margin:0 0 10px;">One pattern per line. <a href="https://restic.readthedocs.io/en/stable/040_backup.html#excluding-files" target="_blank" style="color:var(--accent);">Restic exclude syntax</a></p>
+                        <div style="margin-bottom:10px;">
+                            <label style="font-weight:bold;display:block;margin-bottom:4px;">Global Excludes (all targets):</label>
+                            <textarea class="rb-excludes job-exc-global" placeholder="e.g.&#10;.Trash&#10;**/.Recycle.Bin/**&#10;*.DS_Store"><?= htmlspecialchars(implode("\n", $j['excludes']['global'] ?? [])) ?></textarea>
+                        </div>
+                        <div>
+                            <label style="font-weight:bold;display:block;margin-bottom:4px;">Optional Excludes (only targets with "Optional Excludes: Yes"):</label>
+                            <textarea class="rb-excludes job-exc-optional" placeholder="e.g.&#10;**/jellyfin/cache/**&#10;**/Plex Media Server/Cache/**"><?= htmlspecialchars(implode("\n", $j['excludes']['optional'] ?? [])) ?></textarea>
+                        </div>
+                    </div>
                 </div>
-                <div class="restic-row">
-                    <label>Enabled:</label>
-                    <select class="target-enabled">
-                        <option value="1" <?= $t['enabled'] !== false ? 'selected' : '' ?>>Yes</option>
-                        <option value="0" <?= $t['enabled'] === false ? 'selected' : '' ?>>No</option>
-                    </select>
+
+                <!-- RETENTION -->
+                <div class="rb-section">
+                    <div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Retention Policy</span><span class="arr">&#9660;</span></div>
+                    <div class="rb-section-body hidden">
+                        <p style="color:var(--text-muted);margin:0 0 10px;">How many snapshots to keep. Set to 0 to disable a rule.</p>
+                        <div class="rb-retention-grid">
+                            <div class="rb-row"><label>Keep Daily:</label><input type="number" class="ret-daily" value="<?= (int)($j['retention']['keep_daily'] ?? 7) ?>" min="0"></div>
+                            <div class="rb-row"><label>Keep Weekly:</label><input type="number" class="ret-weekly" value="<?= (int)($j['retention']['keep_weekly'] ?? 4) ?>" min="0"></div>
+                            <div class="rb-row"><label>Keep Monthly:</label><input type="number" class="ret-monthly" value="<?= (int)($j['retention']['keep_monthly'] ?? 0) ?>" min="0"></div>
+                            <div class="rb-row"><label>Keep Yearly:</label><input type="number" class="ret-yearly" value="<?= (int)($j['retention']['keep_yearly'] ?? 0) ?>" min="0"></div>
+                        </div>
+                    </div>
                 </div>
+
+                <!-- SCHEDULE & CHECK -->
+                <div class="rb-section">
+                    <div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Schedule &amp; Integrity Check</span><span class="arr">&#9660;</span></div>
+                    <div class="rb-section-body hidden">
+                        <div class="rb-row"><label>Schedule:</label><select class="sched-enabled"><option value="0" <?= !($j['schedule']['enabled'] ?? false) ? 'selected' : '' ?>>Disabled</option><option value="1" <?= ($j['schedule']['enabled'] ?? false) ? 'selected' : '' ?>>Enabled</option></select></div>
+                        <div class="rb-row">
+                            <label>Preset:</label>
+                            <select class="sched-preset" onchange="rbApplyPreset(this)">
+                                <option value="">Custom</option>
+                                <option value="0 3 * * *">Daily 3:00 AM</option>
+                                <option value="0 4 * * *">Daily 4:00 AM</option>
+                                <option value="0 2 * * 0">Weekly Sunday 2 AM</option>
+                                <option value="0 2 * * 6">Weekly Saturday 2 AM</option>
+                            </select>
+                        </div>
+                        <div class="rb-row"><label>Cron:</label><input type="text" class="sched-cron" value="<?= htmlspecialchars($j['schedule']['cron'] ?? '') ?>" placeholder="0 3 * * *" style="max-width:180px;"><span class="rb-hint">minute hour day month weekday</span></div>
+                        <hr style="border-color:var(--border);margin:10px 0;">
+                        <div class="rb-row"><label>Integrity Check:</label><select class="chk-enabled"><option value="0" <?= !($j['check']['enabled'] ?? false) ? 'selected' : '' ?>>Disabled</option><option value="1" <?= ($j['check']['enabled'] ?? false) ? 'selected' : '' ?>>Enabled</option></select></div>
+                        <div class="rb-row"><label>Data Percentage:</label><input type="text" class="chk-pct" value="<?= htmlspecialchars($j['check']['percentage'] ?? '2%') ?>" placeholder="2%" style="max-width:80px;"></div>
+                        <div class="rb-row"><label>Check When:</label><select class="chk-sched"><option value="sunday" <?= ($j['check']['schedule'] ?? '') === 'sunday' ? 'selected' : '' ?>>Every Sunday</option><option value="monthly" <?= ($j['check']['schedule'] ?? '') === 'monthly' ? 'selected' : '' ?>>First of Month</option><option value="always" <?= ($j['check']['schedule'] ?? '') === 'always' ? 'selected' : '' ?>>Every Backup</option></select></div>
+                        <hr style="border-color:var(--border);margin:10px 0;">
+                        <div class="rb-row"><label>Tags:</label><input type="text" class="job-tags" value="<?= htmlspecialchars($j['tags'] ?? '') ?>" placeholder="e.g. unraid,daily"></div>
+                        <div class="rb-row"><label>Max Retries:</label><input type="number" class="job-retries" value="<?= (int)($j['max_retries'] ?? 3) ?>" min="1" max="10" style="max-width:70px;"></div>
+                        <div class="rb-row"><label>Retry Wait (s):</label><input type="number" class="job-retry-wait" value="<?= (int)($j['retry_wait'] ?? 30) ?>" min="5" max="600" style="max-width:70px;"></div>
+                    </div>
+                </div>
+
             </div>
             <?php endforeach; ?>
         </div>
-        <button class="restic-btn restic-btn-primary" onclick="addTarget()" style="margin-top:8px;">+ Add Target</button>
+
+        <?php if (empty($jobs)): ?>
+        <p style="color:var(--text-muted);text-align:center;padding:20px;">No backup jobs configured. Click "+ Add Job" to create one.</p>
+        <?php endif; ?>
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- SOURCE DIRECTORIES -->
-<!-- ============================================================ -->
-<div class="restic-section">
-    <div class="restic-section-header collapsed" onclick="toggleSection(this)">
-        <span>Source Directories</span>
-        <span class="toggle-icon">&#9660;</span>
-    </div>
-    <div class="restic-section-body hidden">
-        <p style="color:#888;margin-bottom:12px;">Directories to include in the backup. Each will be mounted into a temporary backup root.</p>
-        <div id="sources-list">
-            <?php foreach ($config['sources'] as $i => $s): ?>
-            <div class="restic-list-item" data-id="<?= htmlspecialchars($s['id']) ?>">
-                <div class="item-header">
-                    <span class="item-title">Source #<?= $i + 1 ?></span>
-                    <button class="restic-btn restic-btn-danger" onclick="removeListItem(this)">Remove</button>
-                </div>
-                <div class="restic-row">
-                    <label>Path:</label>
-                    <input type="text" class="source-path" value="<?= htmlspecialchars($s['path']) ?>" placeholder="/mnt/user/appdata">
-                </div>
-                <div class="restic-row">
-                    <label>Label:</label>
-                    <input type="text" class="source-label" value="<?= htmlspecialchars($s['label']) ?>" placeholder="appdata (used as folder name in backup)">
-                </div>
-                <div class="restic-row">
-                    <label>Read-Only Mount:</label>
-                    <select class="source-readonly">
-                        <option value="1" <?= $s['readonly_mount'] !== false ? 'selected' : '' ?>>Yes</option>
-                        <option value="0" <?= $s['readonly_mount'] === false ? 'selected' : '' ?>>No</option>
-                    </select>
-                </div>
-                <div class="restic-row">
-                    <label>Enabled:</label>
-                    <select class="source-enabled">
-                        <option value="1" <?= $s['enabled'] !== false ? 'selected' : '' ?>>Yes</option>
-                        <option value="0" <?= $s['enabled'] === false ? 'selected' : '' ?>>No</option>
-                    </select>
-                </div>
-            </div>
-            <?php endforeach; ?>
-        </div>
-        <button class="restic-btn restic-btn-primary" onclick="addSource()" style="margin-top:8px;">+ Add Source</button>
-    </div>
+<!-- SAVE -->
+<div style="margin:14px 0;display:flex;gap:10px;align-items:center;">
+    <button class="rb-btn rb-btn-accent" onclick="rbSave()" style="padding:8px 28px;font-size:1.05em;">Save Configuration</button>
+    <span id="rb-save-msg" style="display:none;"></span>
 </div>
 
-<!-- ============================================================ -->
-<!-- ZFS SNAPSHOTS -->
-<!-- ============================================================ -->
-<div class="restic-section">
-    <div class="restic-section-header collapsed" onclick="toggleSection(this)">
-        <span>ZFS Snapshots (Optional)</span>
-        <span class="toggle-icon">&#9660;</span>
-    </div>
-    <div class="restic-section-body hidden">
-        <p style="color:#888;margin-bottom:12px;">
-            Create ZFS snapshots before backup for consistent data. The snapshots are mounted read-only and cleaned up after backup.
-        </p>
-        <div class="restic-row">
-            <label>Enable ZFS Snapshots:</label>
-            <select id="cfg-zfs-enabled">
-                <option value="0" <?= !$config['zfs']['enabled'] ? 'selected' : '' ?>>Disabled</option>
-                <option value="1" <?= $config['zfs']['enabled'] ? 'selected' : '' ?>>Enabled</option>
-            </select>
-        </div>
-        <div class="restic-row">
-            <label>Recursive:</label>
-            <select id="cfg-zfs-recursive">
-                <option value="1" <?= $config['zfs']['recursive'] ? 'selected' : '' ?>>Yes (all child datasets)</option>
-                <option value="0" <?= !$config['zfs']['recursive'] ? 'selected' : '' ?>>No (only listed datasets)</option>
-            </select>
-            <span class="hint">Recursive: automatically includes all child datasets under each parent dataset.</span>
-        </div>
-        <div class="restic-row">
-            <label>Snapshot Prefix:</label>
-            <input type="text" id="cfg-zfs-prefix" value="<?= htmlspecialchars($config['zfs']['snapshot_prefix']) ?>" placeholder="restic-backup">
-        </div>
-        <div style="margin-top:12px;">
-            <label style="font-weight:bold;display:block;margin-bottom:8px;">ZFS Datasets:</label>
-            <div id="zfs-datasets-list">
-                <?php foreach ($config['zfs']['datasets'] as $ds): ?>
-                <div class="restic-row">
-                    <input type="text" class="zfs-dataset" value="<?= htmlspecialchars($ds) ?>" placeholder="e.g. cache/appdata" style="flex:1;">
-                    <button class="restic-btn restic-btn-danger" onclick="this.parentElement.remove()">Remove</button>
-                </div>
-                <?php endforeach; ?>
-            </div>
-            <button class="restic-btn restic-btn-secondary" onclick="addZfsDataset()" style="margin-top:4px;">+ Add Dataset</button>
-        </div>
-    </div>
-</div>
+</div><!-- /rb-wrap -->
 
-<!-- ============================================================ -->
-<!-- EXCLUDE PATTERNS -->
-<!-- ============================================================ -->
-<div class="restic-section">
-    <div class="restic-section-header collapsed" onclick="toggleSection(this)">
-        <span>Exclude Patterns</span>
-        <span class="toggle-icon">&#9660;</span>
+<!-- Browse Modal -->
+<div class="rb-modal-bg" id="rb-browse-bg" onclick="rbCloseBrowse()"></div>
+<div class="rb-modal" id="rb-browse-modal" style="display:none;">
+    <h3>Browse Directory</h3>
+    <div id="rb-browse-path" style="font-family:monospace;margin-bottom:8px;color:var(--accent);"></div>
+    <div id="rb-browse-list"></div>
+    <div style="margin-top:12px;display:flex;gap:6px;">
+        <button class="rb-btn rb-btn-green" onclick="rbBrowseSelect()">Select</button>
+        <button class="rb-btn rb-btn-gray" onclick="rbCloseBrowse()">Cancel</button>
     </div>
-    <div class="restic-section-body hidden">
-        <p style="color:#888;margin-bottom:12px;">
-            One pattern per line. Uses
-            <a href="https://restic.readthedocs.io/en/stable/040_backup.html#excluding-files" target="_blank" style="color:#ff8c2f;">restic exclude syntax</a>
-            (glob patterns, ** for recursive matching).
-        </p>
-        <label style="font-weight:bold;">Global Excludes (applied to ALL targets):</label>
-        <textarea class="restic-excludes" id="cfg-excludes-global" placeholder="e.g.&#10;.Trash&#10;**/.Recycle.Bin/**&#10;*.DS_Store"><?= htmlspecialchars(implode("\n", $config['excludes']['global'])) ?></textarea>
-
-        <label style="font-weight:bold;margin-top:12px;display:block;">Optional Excludes (only for targets with "Use Optional Excludes" enabled):</label>
-        <textarea class="restic-excludes" id="cfg-excludes-optional" placeholder="e.g.&#10;**/jellyfin/cache/**&#10;**/Plex Media Server/Cache/**"><?= htmlspecialchars(implode("\n", $config['excludes']['optional'])) ?></textarea>
-    </div>
-</div>
-
-<!-- ============================================================ -->
-<!-- SCHEDULE -->
-<!-- ============================================================ -->
-<div class="restic-section">
-    <div class="restic-section-header collapsed" onclick="toggleSection(this)">
-        <span>Schedule</span>
-        <span class="toggle-icon">&#9660;</span>
-    </div>
-    <div class="restic-section-body hidden">
-        <div class="restic-row">
-            <label>Scheduled Backup:</label>
-            <select id="cfg-schedule-enabled">
-                <option value="0" <?= !$config['schedule']['enabled'] ? 'selected' : '' ?>>Disabled</option>
-                <option value="1" <?= $config['schedule']['enabled'] ? 'selected' : '' ?>>Enabled</option>
-            </select>
-        </div>
-        <div class="restic-row">
-            <label>Schedule Preset:</label>
-            <select id="cfg-schedule-preset" onchange="applySchedulePreset()">
-                <option value="">Custom</option>
-                <option value="0 3 * * *">Daily at 3:00 AM</option>
-                <option value="0 4 * * *">Daily at 4:00 AM</option>
-                <option value="0 2 * * 0">Weekly Sunday 2:00 AM</option>
-                <option value="0 2 * * 6">Weekly Saturday 2:00 AM</option>
-                <option value="0 3 1 * *">Monthly 1st at 3:00 AM</option>
-            </select>
-        </div>
-        <div class="restic-row">
-            <label>Cron Expression:</label>
-            <input type="text" id="cfg-schedule-cron" value="<?= htmlspecialchars($config['schedule']['cron']) ?>" placeholder="0 3 * * *" style="max-width:200px;">
-            <span class="hint">Format: minute hour day-of-month month day-of-week</span>
-        </div>
-    </div>
-</div>
-
-<!-- ============================================================ -->
-<!-- SAVE BUTTON -->
-<!-- ============================================================ -->
-<div style="margin-top:16px; display:flex; gap:10px; align-items:center;">
-    <button class="restic-btn restic-btn-primary" onclick="saveConfig()" style="padding:10px 30px; font-size:1.1em;">Save Configuration</button>
-    <span id="save-status" style="color:#27ae60; display:none;">Configuration saved!</span>
 </div>
 
 <script src="<?autov('/plugins/restic-backup/assets/script.js')?>"></script>
-<script>
-// Initialize password field visibility
-togglePasswordFields();
-</script>
+<script>rbTogglePw();</script>

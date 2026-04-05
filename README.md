@@ -4,10 +4,12 @@ An Unraid plugin that provides a web GUI for managing [restic](https://restic.ne
 
 ## Features
 
-- **Multiple Backup Targets** - Back up to local drives, SFTP servers, S3, or any restic-supported backend
-- **Configurable Source Directories** - Choose exactly which directories to include in backups
-- **ZFS Snapshot Support** - Optional ZFS snapshots before backup for data consistency (supports recursive snapshots across child datasets)
+- **Multiple Backup Jobs** - Create independent backup jobs with their own targets, sources, schedules, and retention policies
+- **Multiple Backup Targets** - Back up to local drives, SFTP, S3/Minio, Backblaze B2, REST Server, or Rclone (with type selector dropdown)
+- **Directory Browser** - Browse and select source directories directly from the web GUI
+- **ZFS Snapshot Support** - Optional ZFS snapshots with auto-detection of available datasets (supports recursive snapshots across child datasets)
 - **Exclude Patterns** - Global excludes for all targets + optional excludes for space-saving on cloud targets
+- **Configurable Retention** - Per-job retention policies (daily, weekly, monthly, yearly)
 - **Scheduled Backups** - Built-in cron scheduling with presets or custom expressions
 - **Integrity Checks** - Configurable periodic data integrity verification
 - **Live Log Viewer** - Monitor backup progress in real-time from the web GUI
