@@ -3,7 +3,7 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "restic-backup">
   <!ENTITY author    "MajorPain007">
-  <!ENTITY version   "2025.04.05">
+  <!ENTITY version   "2025.04.05a">
   <!ENTITY launch    "Settings/ResticBackup">
   <!ENTITY gitURL    "https://raw.githubusercontent.com/MajorPain007/unraid-restic/main">
   <!ENTITY pluginURL "&gitURL;/restic-backup.plg">
@@ -14,7 +14,7 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.12.0">
 
 <CHANGES>
-###2025.04.05
+###2025.04.05a
 - Initial release
 - Restic backup with GUI configuration
 - Multiple backup targets support
@@ -47,8 +47,8 @@
 <URL>&gitURL;/src/include/helpers.php</URL>
 </FILE>
 
-<FILE Name="/usr/local/emhttp/plugins/&name;/include/exec.php">
-<URL>&gitURL;/src/include/exec.php</URL>
+<FILE Name="/usr/local/emhttp/plugins/&name;/include/ResticBackupAPI.php">
+<URL>&gitURL;/src/include/ResticBackupAPI.php</URL>
 </FILE>
 
 <FILE Name="/usr/local/emhttp/plugins/&name;/scripts/restic-backup.py">

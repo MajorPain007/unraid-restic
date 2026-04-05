@@ -1,7 +1,7 @@
 /**
  * Restic Backup Plugin - Frontend
  */
-var rbUrl = '/plugins/restic-backup/include/exec.php';
+var rbUrl = '/plugins/restic-backup/include/ResticBackupAPI.php';
 var rbLogTimer = null;
 var rbBrowseTarget = null;
 var rbBrowseCurrent = '/mnt';
