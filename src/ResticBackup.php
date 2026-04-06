@@ -161,7 +161,7 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
 
         <div id="rb-jobs-container">
             <?php foreach ($jobs as $i => $j): ?>
-            <div class="rb-job-panel" data-job-idx="<?= $i ?>" style="<?= $i > 0 ? 'display:none;' : '' ?>">
+            <div class="rb-job-panel" data-job-idx="<?= $i ?>" data-job-id="<?= htmlspecialchars($j['id'] ?? '') ?>" style="<?= $i > 0 ? 'display:none;' : '' ?>">
 
                 <!-- Job Header -->
                 <div class="rb-row">

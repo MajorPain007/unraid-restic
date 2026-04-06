@@ -1,12 +1,21 @@
 <?php
 /**
- * Restic Backup Plugin - AJAX Endpoint
+ * Restic Backup Plugin - API Endpoint
+ *
+ * ALL requests are POST-only with JSON body.
+ * No query parameters are used – this avoids ad-blocker / tracker-blocker
+ * filter rules that match URL patterns like ?action=xxx.
  */
 require_once '/usr/local/emhttp/plugins/restic-backup/include/helpers.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
-$action = $_GET['action'] ?? $_POST['action'] ?? '';
+// Read JSON body (all requests are POST)
+$input = json_decode(file_get_contents('php://input'), true);
+if (!is_array($input)) {
+    $input = [];
+}
+$action = $input['action'] ?? '';
 
 switch ($action) {
 
@@ -14,12 +23,11 @@ switch ($action) {
     // SAVE CONFIG
     // =========================================================================
     case 'save':
-        $input = file_get_contents('php://input');
-        $config = json_decode($input, true);
+        $config = $input['config'] ?? null;
 
         if (!is_array($config)) {
             http_response_code(400);
-            echo json_encode(['status' => 'error', 'message' => 'Invalid JSON: ' . json_last_error_msg()]);
+            echo json_encode(['status' => 'error', 'message' => 'Invalid config data']);
             break;
         }
 
@@ -49,7 +57,7 @@ switch ($action) {
             break;
         }
 
-        $job_id = $_GET['job_id'] ?? '';
+        $job_id = $input['job_id'] ?? '';
         $cmd = '/usr/bin/python3 ' . escapeshellarg(RESTIC_SCRIPT) . ' --backup';
         if ($job_id) {
             $cmd .= ' --job ' . escapeshellarg($job_id);
@@ -84,7 +92,6 @@ switch ($action) {
     // INIT REPO (URL passed directly, no saved config required)
     // =========================================================================
     case 'init':
-        $input = json_decode(file_get_contents('php://input'), true);
         $url = $input['url'] ?? '';
         $pw_mode = $input['password_mode'] ?? 'file';
         $pw_file = $input['password_file'] ?? '';
@@ -118,7 +125,6 @@ switch ($action) {
     // TEST CONNECTION (URL passed directly)
     // =========================================================================
     case 'test':
-        $input = json_decode(file_get_contents('php://input'), true);
         $url = $input['url'] ?? '';
         $pw_mode = $input['password_mode'] ?? 'file';
         $pw_file = $input['password_file'] ?? '';
@@ -162,15 +168,18 @@ switch ($action) {
     // LOG
     // =========================================================================
     case 'log':
-        header('Content-Type: text/plain; charset=utf-8');
-        echo restic_read_log(200);
+        // Still returns JSON (wrapping the log text)
+        echo json_encode([
+            'status' => 'success',
+            'log'    => restic_read_log(200),
+        ]);
         break;
 
     // =========================================================================
     // BROWSE DIRECTORIES
     // =========================================================================
     case 'browse':
-        $path = $_GET['path'] ?? '/mnt';
+        $path = $input['path'] ?? '/mnt';
         $path = str_replace(['..', "\0"], '', $path);
         if (!$path || $path[0] !== '/') {
             $path = '/mnt';
@@ -198,7 +207,6 @@ switch ($action) {
     // SNAPSHOTS
     // =========================================================================
     case 'snapshots':
-        $input = json_decode(file_get_contents('php://input'), true);
         $url = $input['url'] ?? '';
         $pw_mode = $input['password_mode'] ?? 'file';
         $pw_file = $input['password_file'] ?? '';
@@ -233,6 +241,6 @@ switch ($action) {
     // =========================================================================
     default:
         http_response_code(400);
-        echo json_encode(['status' => 'error', 'message' => 'Unknown action: ' . $action]);
+        echo json_encode(['status' => 'error', 'message' => 'Unknown or missing action']);
         break;
 }

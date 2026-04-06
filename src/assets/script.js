@@ -1,11 +1,41 @@
 /**
  * Restic Backup Plugin - Frontend
+ *
+ * ALL API calls use POST with action in the JSON body.
+ * No query parameters are used in URLs to avoid ad-blocker interference.
  */
 var rbUrl = '/plugins/restic-backup/ResticBackupAPI.php';
 var rbLogTimer = null;
 var rbBrowseTarget = null;
 var rbBrowseCurrent = '/mnt';
 var rbActiveJobIdx = 0;
+
+// =============================================================================
+// CORE AJAX - Always POST, action in body, no URL params
+// =============================================================================
+function rbAjax(action, data, onSuccess, onError) {
+    var body = data || {};
+    body.action = action;
+
+    fetch(rbUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    })
+    .then(function(r) { return r.text(); })
+    .then(function(text) {
+        try {
+            var resp = JSON.parse(text);
+            if (onSuccess) onSuccess(resp);
+        } catch(e) {
+            if (onSuccess) onSuccess({ status: 'success', message: text });
+        }
+    })
+    .catch(function(err) {
+        if (onError) onError(String(err));
+        else rbMsg('Request failed: ' + err, 'error');
+    });
+}
 
 // =============================================================================
 // SECTION TOGGLE
@@ -214,7 +244,7 @@ function rbLoadDatasets(btn) {
     btn.disabled = true;
     btn.textContent = 'Loading...';
 
-    rbAjax('GET', rbUrl + '?action=datasets', null, function(resp) {
+    rbAjax('datasets', {}, function(resp) {
         btn.disabled = false;
         btn.textContent = 'Load Available Datasets';
 
@@ -303,8 +333,16 @@ function rbAddDatasetInput(btn) {
 
 // =============================================================================
 // DIRECTORY BROWSER
+// Uses Unraid's built-in openFileBrowser if available, otherwise our own modal.
 // =============================================================================
 function rbBrowse(inputEl) {
+    // Try Unraid's native file browser first
+    if (typeof openFileBrowser === 'function') {
+        openFileBrowser(inputEl, inputEl.value || '/mnt', 'HIDE_FILES_FILTER', false, true);
+        return;
+    }
+
+    // Fallback: our own browser modal (POST-based, ad-blocker safe)
     rbBrowseTarget = inputEl;
     rbBrowseCurrent = inputEl.value || '/mnt';
     rbBrowseLoad(rbBrowseCurrent);
@@ -330,7 +368,7 @@ function rbBrowseLoad(path) {
     document.getElementById('rb-browse-path').textContent = path;
     document.getElementById('rb-browse-list').innerHTML = '<div style="color:var(--text-muted);">Loading...</div>';
 
-    rbAjax('GET', rbUrl + '?action=browse&path=' + encodeURIComponent(path), null, function(resp) {
+    rbAjax('browse', { path: path }, function(resp) {
         var html = '';
         if (resp.parent && resp.parent !== resp.current) {
             html += '<div class="rb-dir-item" onclick="rbBrowseLoad(\'' + escHtml(resp.parent) + '\')" style="color:var(--accent);">.. (up)</div>';
@@ -439,7 +477,7 @@ function rbSave() {
     var config = rbCollect();
     var msg = document.getElementById('rb-save-msg');
 
-    rbAjax('POST', rbUrl + '?action=save', JSON.stringify(config), function(resp) {
+    rbAjax('save', { config: config }, function(resp) {
         if (resp.status === 'success') {
             msg.textContent = 'Configuration saved!';
             msg.style.color = '#27ae60';
@@ -465,14 +503,11 @@ function rbStartBackup() {
     rbUpdateBadge(true);
 
     var jobId = document.getElementById('rb-job-select').value;
-    var url = rbUrl + '?action=backup';
-    if (jobId) url += '&job_id=' + encodeURIComponent(jobId);
-
-    rbAjax('POST', url, null, function() { rbStartLogPoll(); });
+    rbAjax('backup', { job_id: jobId }, function() { rbStartLogPoll(); });
 }
 
 function rbStopBackup() {
-    rbAjax('POST', rbUrl + '?action=stop', null, function() {
+    rbAjax('stop', {}, function() {
         document.getElementById('btn-start').disabled = false;
         document.getElementById('btn-stop').disabled = true;
         rbUpdateBadge(false);
@@ -498,9 +533,10 @@ function rbInitRepo(btn) {
     if (!url) { rbMsg('Please enter a repository URL first.', 'error'); return; }
 
     btn.disabled = true; btn.textContent = 'Init...';
-    var body = Object.assign({url: url}, rbGetPwConfig());
+    var body = rbGetPwConfig();
+    body.url = url;
 
-    rbAjax('POST', rbUrl + '?action=init', JSON.stringify(body), function(resp) {
+    rbAjax('init', body, function(resp) {
         btn.disabled = false; btn.textContent = 'Init Repo';
         rbMsg(resp.message || 'Done', resp.status === 'success' ? 'success' : 'error');
     }, function(err) {
@@ -515,9 +551,10 @@ function rbTestTarget(btn) {
     if (!url) { rbMsg('Please enter a repository URL first.', 'error'); return; }
 
     btn.disabled = true; btn.textContent = 'Testing...';
-    var body = Object.assign({url: url}, rbGetPwConfig());
+    var body = rbGetPwConfig();
+    body.url = url;
 
-    rbAjax('POST', rbUrl + '?action=test', JSON.stringify(body), function(resp) {
+    rbAjax('test', body, function(resp) {
         btn.disabled = false; btn.textContent = 'Test';
         rbMsg(resp.message || 'Done', resp.status === 'success' ? 'success' : 'error');
     }, function(err) {
@@ -530,16 +567,12 @@ function rbTestTarget(btn) {
 // LOG POLLING
 // =============================================================================
 function rbRefreshLog() {
-    fetch(rbUrl + '?action=log')
-        .then(function(r) { return r.text(); })
-        .then(function(text) {
-            var el = document.getElementById('rb-log');
-            el.textContent = text.trim() || 'No log data.';
-            el.scrollTop = el.scrollHeight;
-        })
-        .catch(function() {
-            document.getElementById('rb-log').textContent = 'Could not load log.';
-        });
+    rbAjax('log', {}, function(resp) {
+        var el = document.getElementById('rb-log');
+        var text = resp.log || '';
+        el.textContent = text.trim() || 'No log data.';
+        el.scrollTop = el.scrollHeight;
+    });
 }
 
 function rbStartLogPoll() {
@@ -556,7 +589,7 @@ function rbStopLogPoll() {
 }
 
 function rbCheckStatus() {
-    rbAjax('GET', rbUrl + '?action=status', null, function(resp) {
+    rbAjax('status', {}, function(resp) {
         if (!resp.running) {
             document.getElementById('btn-start').disabled = false;
             document.getElementById('btn-stop').disabled = true;
@@ -597,26 +630,4 @@ function rbMsg(text, type) {
     } else {
         alert(text);
     }
-}
-
-function rbAjax(method, url, body, onSuccess, onError) {
-    var opts = { method: method };
-    if (body) {
-        opts.headers = { 'Content-Type': 'application/json' };
-        opts.body = body;
-    }
-    fetch(url, opts)
-        .then(function(r) { return r.text(); })
-        .then(function(text) {
-            try {
-                var resp = JSON.parse(text);
-                if (onSuccess) onSuccess(resp);
-            } catch(e) {
-                if (onSuccess) onSuccess({ status: 'success', message: text });
-            }
-        })
-        .catch(function(err) {
-            if (onError) onError(String(err));
-            else rbMsg('Request failed: ' + err, 'error');
-        });
 }
