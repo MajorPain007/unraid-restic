@@ -530,14 +530,13 @@ function rbTestTarget(btn) {
 // LOG POLLING
 // =============================================================================
 function rbRefreshLog() {
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', rbUrl + '?action=log');
-    xhr.onload = function() {
+    $.get(rbUrl + '?action=log', function(data) {
         var el = document.getElementById('rb-log');
-        el.textContent = xhr.responseText.trim() || 'No log data.';
+        el.textContent = (typeof data === 'string' ? data.trim() : JSON.stringify(data)) || 'No log data.';
         el.scrollTop = el.scrollHeight;
-    };
-    xhr.send();
+    }).fail(function() {
+        document.getElementById('rb-log').textContent = 'Could not load log.';
+    });
 }
 
 function rbStartLogPoll() {
@@ -598,20 +597,27 @@ function rbMsg(text, type) {
 }
 
 function rbAjax(method, url, body, onSuccess, onError) {
-    var xhr = new XMLHttpRequest();
-    xhr.open(method, url);
-    if (body) xhr.setRequestHeader('Content-Type', 'application/json');
-    xhr.onload = function() {
-        try {
-            var resp = JSON.parse(xhr.responseText);
+    var opts = {
+        url: url,
+        type: method,
+        dataType: 'json',
+        success: function(resp) {
             if (onSuccess) onSuccess(resp);
-        } catch(e) {
-            if (onSuccess) onSuccess({status: 'success', message: xhr.responseText});
+        },
+        error: function(jqXHR, status, err) {
+            // Try parsing response as JSON anyway
+            try {
+                var resp = JSON.parse(jqXHR.responseText);
+                if (onSuccess) onSuccess(resp);
+                return;
+            } catch(e) {}
+            if (onError) onError(err || status || 'Request failed');
+            else rbMsg('Request failed: ' + (err || status), 'error');
         }
     };
-    xhr.onerror = function() {
-        if (onError) onError('Network error');
-        else rbMsg('Network error', 'error');
-    };
-    xhr.send(body || null);
+    if (body) {
+        opts.data = body;
+        opts.contentType = 'application/json';
+    }
+    $.ajax(opts);
 }
