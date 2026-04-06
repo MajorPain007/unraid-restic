@@ -1,17 +1,17 @@
 <?php
 /**
- * Restic Backup Plugin - API Endpoint
+ * Restic Backup Plugin - API Endpoint (v3)
  *
  * ALL requests are POST-only with JSON body.
- * No query parameters are used – this avoids ad-blocker / tracker-blocker
- * filter rules that match URL patterns like ?action=xxx.
+ * No query parameters are used - avoids ad-blocker interference.
  */
 require_once '/usr/local/emhttp/plugins/restic-backup/include/helpers.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
 // Read JSON body (all requests are POST)
-$input = json_decode(file_get_contents('php://input'), true);
+$raw = file_get_contents('php://input');
+$input = json_decode($raw, true);
 if (!is_array($input)) {
     $input = [];
 }
@@ -27,7 +27,10 @@ switch ($action) {
 
         if (!is_array($config)) {
             http_response_code(400);
-            echo json_encode(['status' => 'error', 'message' => 'Invalid config data']);
+            echo json_encode([
+                'status'  => 'error',
+                'message' => 'No config data received. Raw input length: ' . strlen($raw)
+            ]);
             break;
         }
 
@@ -39,12 +42,27 @@ switch ($action) {
             $config['jobs'] = [];
         }
 
+        $jobCount = count($config['jobs']);
+
         if (restic_save_config($config)) {
+            // Verify the file was actually written
+            $fileSize = file_exists(RESTIC_CONFIG_FILE) ? filesize(RESTIC_CONFIG_FILE) : 0;
             restic_update_cron($config);
-            echo json_encode(['status' => 'success', 'message' => 'Configuration saved']);
+            echo json_encode([
+                'status'  => 'success',
+                'message' => "Saved ({$fileSize} bytes, {$jobCount} jobs)",
+                'file'    => RESTIC_CONFIG_FILE,
+                'size'    => $fileSize,
+            ]);
         } else {
             http_response_code(500);
-            echo json_encode(['status' => 'error', 'message' => 'Could not write config. Check permissions on ' . RESTIC_CONFIG_DIR]);
+            echo json_encode([
+                'status'  => 'error',
+                'message' => 'Write failed!',
+                'dir_exists'  => is_dir(RESTIC_CONFIG_DIR),
+                'dir_writable' => is_writable(RESTIC_CONFIG_DIR),
+                'dir'     => RESTIC_CONFIG_DIR,
+            ]);
         }
         break;
 
@@ -89,7 +107,7 @@ switch ($action) {
         break;
 
     // =========================================================================
-    // INIT REPO (URL passed directly, no saved config required)
+    // INIT REPO
     // =========================================================================
     case 'init':
         $url = $input['url'] ?? '';
@@ -122,7 +140,7 @@ switch ($action) {
         break;
 
     // =========================================================================
-    // TEST CONNECTION (URL passed directly)
+    // TEST CONNECTION
     // =========================================================================
     case 'test':
         $url = $input['url'] ?? '';
@@ -159,8 +177,9 @@ switch ($action) {
     // =========================================================================
     case 'status':
         echo json_encode([
-            'running' => restic_is_running(),
-            'pid'     => restic_get_pid(),
+            'running'     => restic_is_running(),
+            'pid'         => restic_get_pid(),
+            'api_version' => 3,
         ]);
         break;
 
@@ -168,27 +187,9 @@ switch ($action) {
     // LOG
     // =========================================================================
     case 'log':
-        // Still returns JSON (wrapping the log text)
         echo json_encode([
             'status' => 'success',
             'log'    => restic_read_log(200),
-        ]);
-        break;
-
-    // =========================================================================
-    // BROWSE DIRECTORIES
-    // =========================================================================
-    case 'browse':
-        $path = $input['path'] ?? '/mnt';
-        $path = str_replace(['..', "\0"], '', $path);
-        if (!$path || $path[0] !== '/') {
-            $path = '/mnt';
-        }
-        $dirs = restic_list_dirs($path);
-        echo json_encode([
-            'current' => $path,
-            'parent'  => dirname($path),
-            'dirs'    => $dirs,
         ]);
         break;
 
@@ -237,10 +238,33 @@ switch ($action) {
         break;
 
     // =========================================================================
+    // DEBUG - Check config file on disk
+    // =========================================================================
+    case 'debug':
+        $exists = file_exists(RESTIC_CONFIG_FILE);
+        $content = $exists ? file_get_contents(RESTIC_CONFIG_FILE) : null;
+        $size = $exists ? filesize(RESTIC_CONFIG_FILE) : 0;
+        echo json_encode([
+            'api_version'  => 3,
+            'config_dir'   => RESTIC_CONFIG_DIR,
+            'config_file'  => RESTIC_CONFIG_FILE,
+            'dir_exists'   => is_dir(RESTIC_CONFIG_DIR),
+            'dir_writable' => is_dir(RESTIC_CONFIG_DIR) ? is_writable(RESTIC_CONFIG_DIR) : false,
+            'file_exists'  => $exists,
+            'file_size'    => $size,
+            'content'      => $content ? json_decode($content, true) : null,
+        ]);
+        break;
+
+    // =========================================================================
     // DEFAULT
     // =========================================================================
     default:
         http_response_code(400);
-        echo json_encode(['status' => 'error', 'message' => 'Unknown or missing action']);
+        echo json_encode([
+            'status'    => 'error',
+            'message'   => 'Unknown or missing action: ' . $action,
+            'raw_len'   => strlen($raw),
+        ]);
         break;
 }

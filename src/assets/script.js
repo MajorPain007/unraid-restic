@@ -1,13 +1,11 @@
 /**
- * Restic Backup Plugin - Frontend
+ * Restic Backup Plugin - Frontend (v3)
  *
  * ALL API calls use POST with action in the JSON body.
- * No query parameters are used in URLs to avoid ad-blocker interference.
+ * Directory browser uses Unraid's jQuery File Tree + Browse.php.
  */
 var rbUrl = '/plugins/restic-backup/ResticBackupAPI.php';
 var rbLogTimer = null;
-var rbBrowseTarget = null;
-var rbBrowseCurrent = '/mnt';
 var rbActiveJobIdx = 0;
 
 // =============================================================================
@@ -282,7 +280,6 @@ function rbDsToggle(cb) {
     var isRecursive = recursive && recursive.value === '1';
     var val = cb.value;
 
-    // If recursive and checking a parent, uncheck children (parent covers them)
     if (isRecursive && cb.checked) {
         picker.querySelectorAll('.ds-cb').forEach(function(other) {
             if (other !== cb && other.value.indexOf(val + '/') === 0) {
@@ -291,7 +288,6 @@ function rbDsToggle(cb) {
         });
     }
 
-    // Sync to manual inputs
     rbSyncDsToManual(panel);
 }
 
@@ -300,10 +296,7 @@ function rbSyncDsToManual(panel) {
     var manual = panel.querySelector('.zfs-ds-manual');
     if (!picker) return;
 
-    // Clear manual inputs
     manual.innerHTML = '';
-
-    // Add checked datasets as hidden inputs
     picker.querySelectorAll('.ds-cb:checked').forEach(function(cb) {
         var div = document.createElement('div');
         div.className = 'rb-row';
@@ -332,56 +325,88 @@ function rbAddDatasetInput(btn) {
 }
 
 // =============================================================================
-// DIRECTORY BROWSER
-// Uses Unraid's built-in openFileBrowser if available, otherwise our own modal.
+// DIRECTORY BROWSER - Unraid jQuery File Tree
+// Uses /webGui/include/Browse.php (built-in, no ad-blocker issues)
 // =============================================================================
 function rbBrowse(inputEl) {
-    // Try Unraid's native file browser first
-    if (typeof openFileBrowser === 'function') {
-        openFileBrowser(inputEl, inputEl.value || '/mnt', 'HIDE_FILES_FILTER', false, true);
+    // Close any existing file browser popup
+    var existing = document.getElementById('rb-filebrowser');
+    if (existing) existing.remove();
+
+    // Check if jQuery File Tree is available
+    if (typeof $ === 'undefined' || typeof $.fn.fileTree === 'undefined') {
+        // Fallback: simple prompt
+        var path = prompt('Enter directory path:', inputEl.value || '/mnt/user/');
+        if (path !== null) inputEl.value = path;
         return;
     }
 
-    // Fallback: our own browser modal (POST-based, ad-blocker safe)
-    rbBrowseTarget = inputEl;
-    rbBrowseCurrent = inputEl.value || '/mnt';
-    rbBrowseLoad(rbBrowseCurrent);
-    document.getElementById('rb-browse-bg').style.display = 'block';
-    document.getElementById('rb-browse-modal').style.display = 'block';
-}
-
-function rbCloseBrowse() {
-    document.getElementById('rb-browse-bg').style.display = 'none';
-    document.getElementById('rb-browse-modal').style.display = 'none';
-    rbBrowseTarget = null;
-}
-
-function rbBrowseSelect() {
-    if (rbBrowseTarget) {
-        rbBrowseTarget.value = rbBrowseCurrent;
+    var startPath = inputEl.value || '/mnt/user/';
+    // Ensure trailing slash for fileTree root
+    if (startPath.charAt(startPath.length - 1) !== '/') {
+        // Go up to parent directory
+        var lastSlash = startPath.lastIndexOf('/');
+        startPath = lastSlash > 0 ? startPath.substring(0, lastSlash + 1) : '/mnt/';
     }
-    rbCloseBrowse();
-}
 
-function rbBrowseLoad(path) {
-    rbBrowseCurrent = path;
-    document.getElementById('rb-browse-path').textContent = path;
-    document.getElementById('rb-browse-list').innerHTML = '<div style="color:var(--text-muted);">Loading...</div>';
+    var $input = $(inputEl);
 
-    rbAjax('browse', { path: path }, function(resp) {
-        var html = '';
-        if (resp.parent && resp.parent !== resp.current) {
-            html += '<div class="rb-dir-item" onclick="rbBrowseLoad(\'' + escHtml(resp.parent) + '\')" style="color:var(--accent);">.. (up)</div>';
-        }
-        (resp.dirs || []).forEach(function(d) {
-            var name = d.split('/').pop();
-            html += '<div class="rb-dir-item" onclick="rbBrowseLoad(\'' + escHtml(d) + '\')">' + escHtml(name) + '</div>';
-        });
-        if (!html) {
-            html = '<div style="color:var(--text-muted);padding:8px;">Empty directory</div>';
-        }
-        document.getElementById('rb-browse-list').innerHTML = html;
+    // Create popup below the input row
+    var popup = $('<div id="rb-filebrowser" class="rb-ft-popup">'
+        + '<div class="rb-ft-tree"></div>'
+        + '<div class="rb-ft-footer">'
+        + '<span class="rb-ft-path">' + escHtml(startPath) + '</span>'
+        + '<span style="display:flex;gap:4px;">'
+        + '<button class="rb-btn rb-btn-green rb-btn-sm rb-ft-sel">Select</button>'
+        + '<button class="rb-btn rb-btn-gray rb-btn-sm rb-ft-close">Close</button>'
+        + '</span></div></div>');
+
+    $input.closest('.rb-row').after(popup);
+
+    var selectedPath = startPath;
+
+    // Initialize jQuery File Tree with Unraid's Browse.php
+    popup.find('.rb-ft-tree').fileTree({
+        root: startPath,
+        script: '/webGui/include/Browse.php',
+        filter: 'HIDE_FILES_FILTER',
+        multiFolder: false
+    }, function(file) {
+        // File clicked (shouldn't happen with HIDE_FILES_FILTER, but just in case)
+        selectedPath = file;
+        popup.find('.rb-ft-path').text(file);
     });
+
+    // When a folder is clicked/expanded, track it as the selected path
+    popup.on('click', 'LI.directory > A', function() {
+        var rel = $(this).attr('rel');
+        if (rel) {
+            selectedPath = rel;
+            popup.find('.rb-ft-path').text(rel);
+        }
+    });
+
+    // Select button: set the path and close
+    popup.find('.rb-ft-sel').on('click', function() {
+        var path = selectedPath.replace(/\/+$/, ''); // Remove trailing slashes
+        inputEl.value = path;
+        popup.remove();
+    });
+
+    // Close button
+    popup.find('.rb-ft-close').on('click', function() {
+        popup.remove();
+    });
+
+    // Close on outside click
+    setTimeout(function() {
+        $(document).on('mousedown.rbft', function(e) {
+            if (!popup.is(e.target) && popup.has(e.target).length === 0 && !$input.is(e.target)) {
+                popup.remove();
+                $(document).off('mousedown.rbft');
+            }
+        });
+    }, 200);
 }
 
 // =============================================================================
@@ -477,20 +502,25 @@ function rbSave() {
     var config = rbCollect();
     var msg = document.getElementById('rb-save-msg');
 
+    // Show what we're sending (for debugging)
+    console.log('Saving config:', JSON.stringify(config).length, 'bytes,', config.jobs.length, 'jobs');
+
     rbAjax('save', { config: config }, function(resp) {
         if (resp.status === 'success') {
-            msg.textContent = 'Configuration saved!';
+            msg.textContent = resp.message || 'Configuration saved!';
             msg.style.color = '#27ae60';
         } else {
-            msg.textContent = 'Error: ' + (resp.message || 'Unknown');
+            msg.textContent = 'Error: ' + (resp.message || 'Unknown error');
             msg.style.color = '#c0392b';
+            console.error('Save error:', resp);
         }
         msg.style.display = 'inline';
-        setTimeout(function() { msg.style.display = 'none'; }, 4000);
+        setTimeout(function() { msg.style.display = 'none'; }, 5000);
     }, function(err) {
         msg.textContent = 'Save failed: ' + err;
         msg.style.color = '#c0392b';
         msg.style.display = 'inline';
+        console.error('Save fetch error:', err);
     });
 }
 
@@ -517,7 +547,7 @@ function rbStopBackup() {
 }
 
 // =============================================================================
-// INIT / TEST (pass URL directly, no saved config required)
+// INIT / TEST
 // =============================================================================
 function rbGetPwConfig() {
     return {

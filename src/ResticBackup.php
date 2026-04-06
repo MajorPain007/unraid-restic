@@ -11,6 +11,8 @@ $jobs = $config['jobs'] ?? [];
 ?>
 
 <link type="text/css" rel="stylesheet" href="<?autov('/webGui/styles/jquery.ui.css')?>">
+<link type="text/css" rel="stylesheet" href="<?autov('/webGui/styles/jquery.filetree.css')?>">
+<script src="<?autov('/webGui/scripts/jquery.filetree.js')?>"></script>
 <style>
 :root { --accent: #ff8c2f; --accent-hover: #e67a20; --green: #27ae60; --red: #c0392b; --bg-card: #1c1c1c; --bg-input: #111; --border: #333; --text: #ddd; --text-muted: #888; }
 .rb-wrap { max-width: 1100px; }
@@ -56,12 +58,13 @@ $jobs = $config['jobs'] ?? [];
 /* Excludes */
 textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family: monospace; font-size: .88em; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); padding: 8px; resize: vertical; border-radius: 3px; }
 
-/* Browse modal */
-.rb-modal-bg { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,.6); z-index: 9998; }
-.rb-modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); background: #222; border: 1px solid var(--border); border-radius: 8px; padding: 20px; z-index: 9999; min-width: 400px; max-width: 600px; max-height: 70vh; overflow-y: auto; }
-.rb-modal h3 { margin: 0 0 12px 0; }
-.rb-modal .rb-dir-item { padding: 6px 10px; cursor: pointer; border-radius: 3px; }
-.rb-modal .rb-dir-item:hover { background: #333; }
+/* File tree browser popup */
+.rb-ft-popup { border: 1px solid var(--border); border-radius: 6px; background: #1a1a1a; margin-top: 6px; max-width: 500px; }
+.rb-ft-tree { max-height: 320px; overflow-y: auto; padding: 8px; }
+.rb-ft-tree .jqueryFileTree a { color: var(--text) !important; text-decoration: none; }
+.rb-ft-tree .jqueryFileTree a:hover { color: var(--accent) !important; }
+.rb-ft-footer { padding: 8px 12px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; }
+.rb-ft-path { font-family: monospace; font-size: 0.85em; color: var(--accent); word-break: break-all; flex: 1; }
 
 /* Dataset picker */
 .rb-ds-list { max-height: 250px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; padding: 6px; background: var(--bg-input); }
@@ -360,18 +363,6 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
 </div>
 
 </div><!-- /rb-wrap -->
-
-<!-- Browse Modal -->
-<div class="rb-modal-bg" id="rb-browse-bg" onclick="rbCloseBrowse()"></div>
-<div class="rb-modal" id="rb-browse-modal" style="display:none;">
-    <h3>Browse Directory</h3>
-    <div id="rb-browse-path" style="font-family:monospace;margin-bottom:8px;color:var(--accent);"></div>
-    <div id="rb-browse-list"></div>
-    <div style="margin-top:12px;display:flex;gap:6px;">
-        <button class="rb-btn rb-btn-green" onclick="rbBrowseSelect()">Select</button>
-        <button class="rb-btn rb-btn-gray" onclick="rbCloseBrowse()">Cancel</button>
-    </div>
-</div>
 
 <script src="<?autov('/plugins/restic-backup/assets/script.js')?>"></script>
 <script>rbTogglePw();</script>
