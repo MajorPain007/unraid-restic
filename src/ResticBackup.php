@@ -1,6 +1,6 @@
 <?php
 /**
- * Restic Backup Plugin - Main GUI
+ * Restic Backup Plugin - Main GUI (v4)
  * Job-based architecture with collapsible sections.
  */
 require_once '/usr/local/emhttp/plugins/restic-backup/include/helpers.php';
@@ -11,8 +11,6 @@ $jobs = $config['jobs'] ?? [];
 ?>
 
 <link type="text/css" rel="stylesheet" href="<?autov('/webGui/styles/jquery.ui.css')?>">
-<link type="text/css" rel="stylesheet" href="<?autov('/webGui/styles/jquery.filetree.css')?>">
-<script src="<?autov('/webGui/scripts/jquery.filetree.js')?>"></script>
 <style>
 :root { --accent: #ff8c2f; --accent-hover: #e67a20; --green: #27ae60; --red: #c0392b; --bg-card: #1c1c1c; --bg-input: #111; --border: #333; --text: #ddd; --text-muted: #888; }
 .rb-wrap { max-width: 1100px; }
@@ -58,13 +56,14 @@ $jobs = $config['jobs'] ?? [];
 /* Excludes */
 textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family: monospace; font-size: .88em; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); padding: 8px; resize: vertical; border-radius: 3px; }
 
-/* File tree browser popup */
-.rb-ft-popup { border: 1px solid var(--border); border-radius: 6px; background: #1a1a1a; margin-top: 6px; max-width: 500px; }
-.rb-ft-tree { max-height: 320px; overflow-y: auto; padding: 8px; }
-.rb-ft-tree .jqueryFileTree a { color: var(--text) !important; text-decoration: none; }
-.rb-ft-tree .jqueryFileTree a:hover { color: var(--accent) !important; }
-.rb-ft-footer { padding: 8px 12px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; }
-.rb-ft-path { font-family: monospace; font-size: 0.85em; color: var(--accent); word-break: break-all; flex: 1; }
+/* Inline directory browser */
+.rb-tree { border: 1px solid var(--border); border-radius: 4px; background: var(--bg-input); max-height: 300px; overflow-y: auto; margin-top: 4px; margin-bottom: 8px; max-width: 500px; }
+.rb-tree-item { padding: 5px 10px; cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--text); font-size: .9em; }
+.rb-tree-item:hover { background: #252525; }
+.rb-tree-item.rb-tree-up { color: var(--accent); font-weight: bold; }
+.rb-tree-item .rb-tree-icon { width: 16px; text-align: center; color: var(--accent); }
+.rb-tree-hdr { padding: 6px 10px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); font-size: .85em; }
+.rb-tree-hdr .rb-tree-path { font-family: monospace; color: var(--accent); }
 
 /* Dataset picker */
 .rb-ds-list { max-height: 250px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; padding: 6px; background: var(--bg-input); }
@@ -126,7 +125,7 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
         </div>
         <div class="rb-row" id="row-pw-file">
             <label>Password File:</label>
-            <input type="text" id="cfg-pw-file" value="<?= htmlspecialchars($config['general']['password_file'] ?? '') ?>" placeholder="/mnt/user/appdata/restic/password.txt">
+            <input type="text" id="cfg-pw-file" value="<?= htmlspecialchars($config['general']['password_file'] ?? '') ?>" placeholder="/mnt/user/appdata/restic/password.txt" data-picktree="file">
         </div>
         <div class="rb-row" id="row-pw-inline" style="display:none;">
             <label>Password:</label>
@@ -202,10 +201,7 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
                                 </div>
                                 <div class="rb-row">
                                     <label>Repository URL:</label>
-                                    <input type="text" class="target-url" value="<?= htmlspecialchars($t['url'] ?? '') ?>" placeholder="<?= ($t['type'] ?? 'local') === 'local' ? '/mnt/disks/backup/restic' : 'sftp://user@host:/path' ?>">
-                                    <?php if (($t['type'] ?? 'local') === 'local'): ?>
-                                    <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbBrowse(this.closest('.rb-card').querySelector('.target-url'))">Browse</button>
-                                    <?php endif; ?>
+                                    <input type="text" class="target-url" value="<?= htmlspecialchars($t['url'] ?? '') ?>" placeholder="<?= ($t['type'] ?? 'local') === 'local' ? '/mnt/disks/backup/restic' : 'sftp://user@host:/path' ?>" data-picktree="<?= ($t['type'] ?? 'local') === 'local' ? 'dir' : '' ?>">
                                 </div>
                                 <div class="rb-row">
                                     <label>Name:</label>
@@ -261,7 +257,7 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
                 <div class="rb-section">
                     <div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Source Directories</span><span class="arr">&#9660;</span></div>
                     <div class="rb-section-body hidden">
-                        <p style="color:var(--text-muted);margin:0 0 10px;">Directories to include in the backup.</p>
+                        <p style="color:var(--text-muted);margin:0 0 10px;">Directories to include in the backup. Click into a path field to browse.</p>
                         <div class="job-sources">
                             <?php foreach (($j['sources'] ?? []) as $si => $s): ?>
                             <div class="rb-card" data-id="<?= htmlspecialchars($s['id'] ?? '') ?>">
@@ -271,8 +267,7 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
                                 </div>
                                 <div class="rb-row">
                                     <label>Path:</label>
-                                    <input type="text" class="source-path" value="<?= htmlspecialchars($s['path'] ?? '') ?>" placeholder="/mnt/user/appdata">
-                                    <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbBrowse(this.closest('.rb-card').querySelector('.source-path'))">Browse</button>
+                                    <input type="text" class="source-path" value="<?= htmlspecialchars($s['path'] ?? '') ?>" placeholder="/mnt/user/appdata" data-picktree="dir">
                                 </div>
                                 <div class="rb-row">
                                     <label>Label:</label>
@@ -365,4 +360,4 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
 </div><!-- /rb-wrap -->
 
 <script src="<?autov('/plugins/restic-backup/assets/script.js')?>"></script>
-<script>rbTogglePw();</script>
+<script>rbTogglePw(); rbInitPickTree();</script>

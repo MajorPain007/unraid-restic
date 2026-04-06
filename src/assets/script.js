@@ -1,12 +1,13 @@
 /**
- * Restic Backup Plugin - Frontend (v3)
+ * Restic Backup Plugin - Frontend (v4)
  *
- * ALL API calls use POST with action in the JSON body.
- * Directory browser uses Unraid's jQuery File Tree + Browse.php.
+ * ALL API calls use POST with JSON body. No URL params.
+ * Inline directory picker (click into path field to browse).
  */
 var rbUrl = '/plugins/restic-backup/ResticBackupAPI.php';
 var rbLogTimer = null;
 var rbActiveJobIdx = 0;
+var rbActiveTree = null; // currently open tree picker element
 
 // =============================================================================
 // CORE AJAX - Always POST, action in body, no URL params
@@ -14,19 +15,32 @@ var rbActiveJobIdx = 0;
 function rbAjax(action, data, onSuccess, onError) {
     var body = data || {};
     body.action = action;
+    var payload = JSON.stringify(body);
 
     fetch(rbUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: payload
     })
-    .then(function(r) { return r.text(); })
+    .then(function(r) {
+        if (!r.ok) {
+            throw new Error('HTTP ' + r.status + ' ' + r.statusText);
+        }
+        return r.text();
+    })
     .then(function(text) {
+        // Try to extract JSON even if there's PHP warnings before it
+        var jsonStart = text.indexOf('{');
+        var jsonText = jsonStart >= 0 ? text.substring(jsonStart) : text;
+
         try {
-            var resp = JSON.parse(text);
+            var resp = JSON.parse(jsonText);
             if (onSuccess) onSuccess(resp);
         } catch(e) {
-            if (onSuccess) onSuccess({ status: 'success', message: text });
+            // Could not parse JSON at all - this is an error
+            var errMsg = text.length > 200 ? text.substring(0, 200) + '...' : text;
+            if (onError) onError('Invalid response: ' + errMsg);
+            else rbMsg('Server error: ' + errMsg, 'error');
         }
     })
     .catch(function(err) {
@@ -69,7 +83,6 @@ function rbAddJob() {
     var idx = container.querySelectorAll('.rb-job-panel').length;
     var id = rbGenId();
 
-    // Add tab
     var addBtn = tabs.querySelector('button');
     var tab = document.createElement('div');
     tab.className = 'rb-job-tab';
@@ -77,15 +90,12 @@ function rbAddJob() {
     tab.onclick = function() { rbSwitchJob(idx); };
     tabs.insertBefore(tab, addBtn);
 
-    // Remove "no jobs" message
     var noJobs = container.parentElement.querySelector('p');
     if (noJobs) noJobs.remove();
 
-    // Add panel
-    var html = rbJobPanelHtml(id, idx);
-    container.insertAdjacentHTML('beforeend', html);
-
+    container.insertAdjacentHTML('beforeend', rbJobPanelHtml(id, idx));
     rbSwitchJob(idx);
+    rbInitPickTree();
 }
 
 function rbRemoveJob(btn) {
@@ -97,14 +107,11 @@ function rbRemoveJob(btn) {
     var tabs = document.querySelectorAll('.rb-job-tab');
     if (tabs[idx]) tabs[idx].remove();
 
-    // Re-index
     document.querySelectorAll('.rb-job-panel').forEach(function(p, i) { p.setAttribute('data-job-idx', i); });
     var newTabs = document.querySelectorAll('.rb-job-tab');
     newTabs.forEach(function(t, i) { t.onclick = function() { rbSwitchJob(i); }; });
 
-    if (newTabs.length > 0) {
-        rbSwitchJob(0);
-    }
+    if (newTabs.length > 0) rbSwitchJob(0);
 }
 
 function rbJobPanelHtml(id, idx) {
@@ -114,10 +121,8 @@ function rbJobPanelHtml(id, idx) {
     + '  <select class="job-enabled"><option value="1" selected>Enabled</option><option value="0">Disabled</option></select>'
     + '  <button class="rb-btn rb-btn-red rb-btn-sm" onclick="rbRemoveJob(this)">Delete Job</button>'
     + '</div>'
-    // Targets
     + '<div class="rb-section" style="margin-top:10px;"><div class="rb-section-hdr" onclick="rbToggle(this)"><span>Targets</span><span class="arr">&#9660;</span></div>'
     + '<div class="rb-section-body"><div class="job-targets"></div><button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbAddTarget(this)">+ Add Target</button></div></div>'
-    // ZFS
     + '<div class="rb-section"><div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>ZFS Snapshots</span><span class="arr">&#9660;</span></div>'
     + '<div class="rb-section-body hidden"><p style="color:var(--text-muted);margin:0 0 10px;">Create ZFS snapshots before backup for data consistency.</p>'
     + '<div class="rb-row"><label>Enable Snapshots:</label><select class="zfs-enabled"><option value="0" selected>Disabled</option><option value="1">Enabled</option></select></div>'
@@ -128,16 +133,13 @@ function rbJobPanelHtml(id, idx) {
     + '<div class="zfs-ds-picker rb-ds-list" style="display:none;"></div>'
     + '<div class="zfs-ds-manual"></div>'
     + '<button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbAddDatasetInput(this)" style="margin-top:4px;">+ Add Manually</button></div></div></div>'
-    // Sources
     + '<div class="rb-section"><div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Source Directories</span><span class="arr">&#9660;</span></div>'
-    + '<div class="rb-section-body hidden"><p style="color:var(--text-muted);margin:0 0 10px;">Directories to include in the backup.</p>'
+    + '<div class="rb-section-body hidden"><p style="color:var(--text-muted);margin:0 0 10px;">Directories to include in the backup. Click into a path field to browse.</p>'
     + '<div class="job-sources"></div><button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbAddSource(this)">+ Add Source</button></div></div>'
-    // Excludes
     + '<div class="rb-section"><div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Exclude Patterns</span><span class="arr">&#9660;</span></div>'
     + '<div class="rb-section-body hidden"><p style="color:var(--text-muted);margin:0 0 10px;">One pattern per line.</p>'
     + '<div style="margin-bottom:10px;"><label style="font-weight:bold;display:block;margin-bottom:4px;">Global Excludes:</label><textarea class="rb-excludes job-exc-global" placeholder=".Trash&#10;*.DS_Store"></textarea></div>'
     + '<div><label style="font-weight:bold;display:block;margin-bottom:4px;">Optional Excludes:</label><textarea class="rb-excludes job-exc-optional" placeholder="**/cache/**"></textarea></div></div></div>'
-    // Retention
     + '<div class="rb-section"><div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Retention Policy</span><span class="arr">&#9660;</span></div>'
     + '<div class="rb-section-body hidden"><div class="rb-retention-grid">'
     + '<div class="rb-row"><label>Keep Daily:</label><input type="number" class="ret-daily" value="7" min="0"></div>'
@@ -145,7 +147,6 @@ function rbJobPanelHtml(id, idx) {
     + '<div class="rb-row"><label>Keep Monthly:</label><input type="number" class="ret-monthly" value="0" min="0"></div>'
     + '<div class="rb-row"><label>Keep Yearly:</label><input type="number" class="ret-yearly" value="0" min="0"></div>'
     + '</div></div></div>'
-    // Schedule
     + '<div class="rb-section"><div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Schedule &amp; Integrity Check</span><span class="arr">&#9660;</span></div>'
     + '<div class="rb-section-body hidden">'
     + '<div class="rb-row"><label>Schedule:</label><select class="sched-enabled"><option value="0" selected>Disabled</option><option value="1">Enabled</option></select></div>'
@@ -159,8 +160,7 @@ function rbJobPanelHtml(id, idx) {
     + '<div class="rb-row"><label>Tags:</label><input type="text" class="job-tags" value="" placeholder="unraid,daily"></div>'
     + '<div class="rb-row"><label>Max Retries:</label><input type="number" class="job-retries" value="3" min="1" max="10" style="max-width:70px;"></div>'
     + '<div class="rb-row"><label>Retry Wait (s):</label><input type="number" class="job-retry-wait" value="30" min="5" style="max-width:70px;"></div>'
-    + '</div></div>'
-    + '</div>';
+    + '</div></div></div>';
 }
 
 // =============================================================================
@@ -178,13 +178,13 @@ function rbAddTarget(btn) {
         + '<div class="rb-row"><label>Type:</label><select class="target-type" onchange="rbTargetTypeChange(this)">'
         + '<option value="local">Local Path</option><option value="sftp">SFTP</option><option value="s3">S3 / Minio</option>'
         + '<option value="b2">Backblaze B2</option><option value="rest">REST Server</option><option value="rclone">Rclone</option></select></div>'
-        + '<div class="rb-row"><label>Repository URL:</label><input type="text" class="target-url" value="" placeholder="/mnt/disks/backup/restic">'
-        + '<button class="rb-btn rb-btn-gray rb-btn-sm target-browse-btn" onclick="rbBrowse(this.closest(\'.rb-card\').querySelector(\'.target-url\'))">Browse</button></div>'
+        + '<div class="rb-row"><label>Repository URL:</label><input type="text" class="target-url" value="" placeholder="/mnt/disks/backup/restic" data-picktree="dir"></div>'
         + '<div class="rb-row"><label>Name:</label><input type="text" class="target-name" value="" placeholder="e.g. Hetzner Cloud"></div>'
         + '<div class="rb-row"><label>Optional Excludes:</label><select class="target-opt-exc"><option value="0" selected>No</option><option value="1">Yes</option></select></div>'
         + '<div class="rb-row"><label>Enabled:</label><select class="target-enabled"><option value="1" selected>Yes</option><option value="0">No</option></select></div>'
         + '</div>';
     list.insertAdjacentHTML('beforeend', html);
+    rbInitPickTree();
 }
 
 function rbAddSource(btn) {
@@ -194,12 +194,133 @@ function rbAddSource(btn) {
     var html = '<div class="rb-card" data-id="' + id + '">'
         + '<div class="rb-card-hdr"><span class="rb-card-title">Source #' + n + '</span>'
         + '<button class="rb-btn rb-btn-red rb-btn-sm" onclick="this.closest(\'.rb-card\').remove()">Remove</button></div>'
-        + '<div class="rb-row"><label>Path:</label><input type="text" class="source-path" value="" placeholder="/mnt/user/appdata">'
-        + '<button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbBrowse(this.closest(\'.rb-card\').querySelector(\'.source-path\'))">Browse</button></div>'
+        + '<div class="rb-row"><label>Path:</label><input type="text" class="source-path" value="" placeholder="/mnt/user/appdata" data-picktree="dir"></div>'
         + '<div class="rb-row"><label>Label:</label><input type="text" class="source-label" value="" placeholder="appdata"></div>'
         + '<div class="rb-row"><label>Enabled:</label><select class="source-enabled"><option value="1" selected>Yes</option><option value="0">No</option></select></div>'
         + '</div>';
     list.insertAdjacentHTML('beforeend', html);
+    rbInitPickTree();
+}
+
+// =============================================================================
+// INLINE DIRECTORY PICKER (click into input → tree appears below)
+// =============================================================================
+function rbInitPickTree() {
+    document.querySelectorAll('[data-picktree]').forEach(function(input) {
+        if (input._rbPickBound) return;
+        input._rbPickBound = true;
+
+        input.addEventListener('focus', function() {
+            rbOpenTree(input);
+        });
+    });
+}
+
+function rbCloseTree() {
+    if (rbActiveTree) {
+        rbActiveTree.remove();
+        rbActiveTree = null;
+    }
+}
+
+function rbOpenTree(input) {
+    rbCloseTree();
+
+    var startPath = input.value || '/mnt';
+    // Go to parent dir if path doesn't end with /
+    if (startPath !== '/' && startPath.indexOf('/') > 0) {
+        var parts = startPath.replace(/\/+$/, '').split('/');
+        if (parts.length > 2) {
+            startPath = parts.slice(0, -1).join('/') || '/mnt';
+        }
+    }
+
+    var tree = document.createElement('div');
+    tree.className = 'rb-tree';
+    tree.id = 'rb-active-tree';
+
+    var hdr = document.createElement('div');
+    hdr.className = 'rb-tree-hdr';
+    hdr.innerHTML = '<span class="rb-tree-path">' + escHtml(startPath) + '</span>'
+        + '<button class="rb-btn rb-btn-green rb-btn-sm" onclick="rbTreeSelect()">Select</button>'
+        + '<button class="rb-btn rb-btn-gray rb-btn-sm" style="margin-left:4px;" onclick="rbCloseTree()">Close</button>';
+    tree.appendChild(hdr);
+
+    var list = document.createElement('div');
+    list.className = 'rb-tree-list';
+    list.innerHTML = '<div style="padding:8px;color:var(--text-muted);">Loading...</div>';
+    tree.appendChild(list);
+
+    // Insert tree after the input's row
+    input.closest('.rb-row').after(tree);
+    rbActiveTree = tree;
+    tree._rbInput = input;
+    tree._rbPath = startPath;
+
+    rbLoadTree(tree, startPath);
+
+    // Close on outside click (with delay to avoid instant close)
+    setTimeout(function() {
+        document.addEventListener('mousedown', rbTreeOutsideClick);
+    }, 200);
+}
+
+function rbTreeOutsideClick(e) {
+    if (rbActiveTree && !rbActiveTree.contains(e.target) && e.target !== rbActiveTree._rbInput) {
+        rbCloseTree();
+        document.removeEventListener('mousedown', rbTreeOutsideClick);
+    }
+}
+
+function rbTreeSelect() {
+    if (rbActiveTree && rbActiveTree._rbInput) {
+        rbActiveTree._rbInput.value = rbActiveTree._rbPath.replace(/\/+$/, '') || '/';
+    }
+    rbCloseTree();
+    document.removeEventListener('mousedown', rbTreeOutsideClick);
+}
+
+function rbLoadTree(tree, path) {
+    var list = tree.querySelector('.rb-tree-list');
+    list.innerHTML = '<div style="padding:8px;color:var(--text-muted);">Loading...</div>';
+
+    rbAjax('browse', { path: path }, function(resp) {
+        tree._rbPath = resp.current || path;
+        tree.querySelector('.rb-tree-path').textContent = tree._rbPath;
+
+        var html = '';
+
+        // Up link
+        if (resp.parent && resp.parent !== resp.current) {
+            html += '<div class="rb-tree-item rb-tree-up" data-path="' + escAttr(resp.parent) + '">'
+                + '<span class="rb-tree-icon">&#8593;</span> ..</div>';
+        }
+
+        // Directories
+        var dirs = resp.dirs || [];
+        if (dirs.length === 0 && !resp.parent) {
+            html = '<div style="padding:8px;color:var(--text-muted);">No directories found</div>';
+        }
+        dirs.forEach(function(d) {
+            var name = d.split('/').pop();
+            html += '<div class="rb-tree-item" data-path="' + escAttr(d) + '">'
+                + '<span class="rb-tree-icon">&#128193;</span> ' + escHtml(name) + '</div>';
+        });
+
+        list.innerHTML = html;
+
+        // Attach click handlers
+        list.querySelectorAll('.rb-tree-item').forEach(function(item) {
+            item.addEventListener('click', function() {
+                var p = item.getAttribute('data-path');
+                tree._rbPath = p;
+                tree.querySelector('.rb-tree-path').textContent = p;
+                rbLoadTree(tree, p);
+            });
+        });
+    }, function(err) {
+        list.innerHTML = '<div style="padding:8px;color:var(--red);">Error: ' + escHtml(err) + '</div>';
+    });
 }
 
 // =============================================================================
@@ -208,7 +329,6 @@ function rbAddSource(btn) {
 function rbTargetTypeChange(sel) {
     var card = sel.closest('.rb-card');
     var urlInput = card.querySelector('.target-url');
-    var browseBtn = card.querySelector('.target-browse-btn');
     var type = sel.value;
     var placeholders = {
         'local': '/mnt/disks/backup/restic',
@@ -219,9 +339,15 @@ function rbTargetTypeChange(sel) {
         'rclone': 'rclone:remote:path'
     };
     urlInput.placeholder = placeholders[type] || '';
-    if (browseBtn) {
-        browseBtn.style.display = type === 'local' ? '' : 'none';
+
+    // Only show dir picker for local type
+    if (type === 'local') {
+        urlInput.setAttribute('data-picktree', 'dir');
+    } else {
+        urlInput.removeAttribute('data-picktree');
+        urlInput._rbPickBound = false;
     }
+    rbInitPickTree();
 }
 
 // =============================================================================
@@ -246,18 +372,16 @@ function rbLoadDatasets(btn) {
         btn.disabled = false;
         btn.textContent = 'Load Available Datasets';
 
-        if (!resp.available) {
-            rbMsg('No ZFS datasets found. Is ZFS configured?', 'error');
+        if (!resp.available || !resp.datasets || resp.datasets.length === 0) {
+            rbMsg('No ZFS datasets found. Is ZFS configured on this system?', 'error');
             return;
         }
 
-        // Get currently selected datasets
         var selected = [];
         panel.querySelectorAll('.zfs-dataset').forEach(function(inp) {
             if (inp.value.trim()) selected.push(inp.value.trim());
         });
 
-        // Build tree
         var html = '';
         resp.datasets.forEach(function(ds) {
             var depth = (ds.match(/\//g) || []).length;
@@ -270,6 +394,10 @@ function rbLoadDatasets(btn) {
         });
         picker.innerHTML = html;
         picker.style.display = '';
+    }, function(err) {
+        btn.disabled = false;
+        btn.textContent = 'Load Available Datasets';
+        rbMsg('Failed to load datasets: ' + err, 'error');
     });
 }
 
@@ -287,7 +415,6 @@ function rbDsToggle(cb) {
             }
         });
     }
-
     rbSyncDsToManual(panel);
 }
 
@@ -295,7 +422,6 @@ function rbSyncDsToManual(panel) {
     var picker = panel.querySelector('.zfs-ds-picker');
     var manual = panel.querySelector('.zfs-ds-manual');
     if (!picker) return;
-
     manual.innerHTML = '';
     picker.querySelectorAll('.ds-cb:checked').forEach(function(cb) {
         var div = document.createElement('div');
@@ -322,91 +448,6 @@ function rbAddDatasetInput(btn) {
     manual.insertAdjacentHTML('beforeend',
         '<div class="rb-row"><input type="text" class="zfs-dataset" value="" placeholder="cache/appdata" style="flex:1;">'
         + '<button class="rb-btn rb-btn-red rb-btn-sm" onclick="this.parentElement.remove()">X</button></div>');
-}
-
-// =============================================================================
-// DIRECTORY BROWSER - Unraid jQuery File Tree
-// Uses /webGui/include/Browse.php (built-in, no ad-blocker issues)
-// =============================================================================
-function rbBrowse(inputEl) {
-    // Close any existing file browser popup
-    var existing = document.getElementById('rb-filebrowser');
-    if (existing) existing.remove();
-
-    // Check if jQuery File Tree is available
-    if (typeof $ === 'undefined' || typeof $.fn.fileTree === 'undefined') {
-        // Fallback: simple prompt
-        var path = prompt('Enter directory path:', inputEl.value || '/mnt/user/');
-        if (path !== null) inputEl.value = path;
-        return;
-    }
-
-    var startPath = inputEl.value || '/mnt/user/';
-    // Ensure trailing slash for fileTree root
-    if (startPath.charAt(startPath.length - 1) !== '/') {
-        // Go up to parent directory
-        var lastSlash = startPath.lastIndexOf('/');
-        startPath = lastSlash > 0 ? startPath.substring(0, lastSlash + 1) : '/mnt/';
-    }
-
-    var $input = $(inputEl);
-
-    // Create popup below the input row
-    var popup = $('<div id="rb-filebrowser" class="rb-ft-popup">'
-        + '<div class="rb-ft-tree"></div>'
-        + '<div class="rb-ft-footer">'
-        + '<span class="rb-ft-path">' + escHtml(startPath) + '</span>'
-        + '<span style="display:flex;gap:4px;">'
-        + '<button class="rb-btn rb-btn-green rb-btn-sm rb-ft-sel">Select</button>'
-        + '<button class="rb-btn rb-btn-gray rb-btn-sm rb-ft-close">Close</button>'
-        + '</span></div></div>');
-
-    $input.closest('.rb-row').after(popup);
-
-    var selectedPath = startPath;
-
-    // Initialize jQuery File Tree with Unraid's Browse.php
-    popup.find('.rb-ft-tree').fileTree({
-        root: startPath,
-        script: '/webGui/include/Browse.php',
-        filter: 'HIDE_FILES_FILTER',
-        multiFolder: false
-    }, function(file) {
-        // File clicked (shouldn't happen with HIDE_FILES_FILTER, but just in case)
-        selectedPath = file;
-        popup.find('.rb-ft-path').text(file);
-    });
-
-    // When a folder is clicked/expanded, track it as the selected path
-    popup.on('click', 'LI.directory > A', function() {
-        var rel = $(this).attr('rel');
-        if (rel) {
-            selectedPath = rel;
-            popup.find('.rb-ft-path').text(rel);
-        }
-    });
-
-    // Select button: set the path and close
-    popup.find('.rb-ft-sel').on('click', function() {
-        var path = selectedPath.replace(/\/+$/, ''); // Remove trailing slashes
-        inputEl.value = path;
-        popup.remove();
-    });
-
-    // Close button
-    popup.find('.rb-ft-close').on('click', function() {
-        popup.remove();
-    });
-
-    // Close on outside click
-    setTimeout(function() {
-        $(document).on('mousedown.rbft', function(e) {
-            if (!popup.is(e.target) && popup.has(e.target).length === 0 && !$input.is(e.target)) {
-                popup.remove();
-                $(document).off('mousedown.rbft');
-            }
-        });
-    }, 200);
 }
 
 // =============================================================================
@@ -461,7 +502,6 @@ function rbCollect() {
             retry_wait: parseInt(panel.querySelector('.job-retry-wait').value) || 30
         };
 
-        // Targets
         panel.querySelectorAll('.job-targets .rb-card').forEach(function(card) {
             job.targets.push({
                 id: card.getAttribute('data-id') || rbGenId(),
@@ -473,7 +513,6 @@ function rbCollect() {
             });
         });
 
-        // Sources
         panel.querySelectorAll('.job-sources .rb-card').forEach(function(card) {
             job.sources.push({
                 id: card.getAttribute('data-id') || rbGenId(),
@@ -483,7 +522,6 @@ function rbCollect() {
             });
         });
 
-        // ZFS datasets
         panel.querySelectorAll('.zfs-dataset').forEach(function(inp) {
             var v = inp.value.trim();
             if (v) job.zfs.datasets.push(v);
@@ -496,31 +534,65 @@ function rbCollect() {
 }
 
 // =============================================================================
-// SAVE
+// SAVE + AUTO-INIT
 // =============================================================================
 function rbSave() {
     var config = rbCollect();
     var msg = document.getElementById('rb-save-msg');
 
-    // Show what we're sending (for debugging)
-    console.log('Saving config:', JSON.stringify(config).length, 'bytes,', config.jobs.length, 'jobs');
+    msg.textContent = 'Saving...';
+    msg.style.color = '#f39c12';
+    msg.style.display = 'inline';
 
     rbAjax('save', { config: config }, function(resp) {
         if (resp.status === 'success') {
-            msg.textContent = resp.message || 'Configuration saved!';
+            msg.textContent = resp.message || 'Saved!';
             msg.style.color = '#27ae60';
+
+            // Auto-init: check local targets that might need init
+            rbAutoInit(config);
         } else {
-            msg.textContent = 'Error: ' + (resp.message || 'Unknown error');
+            msg.textContent = 'ERROR: ' + (resp.message || JSON.stringify(resp));
             msg.style.color = '#c0392b';
-            console.error('Save error:', resp);
         }
-        msg.style.display = 'inline';
-        setTimeout(function() { msg.style.display = 'none'; }, 5000);
+        setTimeout(function() { msg.style.display = 'none'; }, 6000);
     }, function(err) {
-        msg.textContent = 'Save failed: ' + err;
+        msg.textContent = 'SAVE FAILED: ' + err;
         msg.style.color = '#c0392b';
         msg.style.display = 'inline';
-        console.error('Save fetch error:', err);
+    });
+}
+
+function rbAutoInit(config) {
+    var pw = {
+        password_mode: config.general.password_mode,
+        password_file: config.general.password_file,
+        password_inline: config.general.password_inline
+    };
+
+    config.jobs.forEach(function(job) {
+        if (!job.enabled) return;
+        job.targets.forEach(function(target) {
+            if (!target.enabled || !target.url) return;
+
+            // Test connection first, if it fails try to init
+            var body = { url: target.url };
+            body.password_mode = pw.password_mode;
+            body.password_file = pw.password_file;
+            body.password_inline = pw.password_inline;
+
+            rbAjax('test', body, function(resp) {
+                if (resp.status !== 'success') {
+                    // Repo doesn't exist yet - try to init
+                    rbAjax('init', body, function(initResp) {
+                        if (initResp.status === 'success') {
+                            rbMsg('Repository auto-initialized: ' + (target.name || target.url), 'success');
+                        }
+                        // Silently ignore init failures (might be remote targets etc.)
+                    });
+                }
+            });
+        });
     });
 }
 
@@ -531,7 +603,6 @@ function rbStartBackup() {
     document.getElementById('btn-start').disabled = true;
     document.getElementById('btn-stop').disabled = false;
     rbUpdateBadge(true);
-
     var jobId = document.getElementById('rb-job-select').value;
     rbAjax('backup', { job_id: jobId }, function() { rbStartLogPoll(); });
 }
@@ -561,11 +632,9 @@ function rbInitRepo(btn) {
     var card = btn.closest('.rb-card');
     var url = card.querySelector('.target-url').value.trim();
     if (!url) { rbMsg('Please enter a repository URL first.', 'error'); return; }
-
     btn.disabled = true; btn.textContent = 'Init...';
     var body = rbGetPwConfig();
     body.url = url;
-
     rbAjax('init', body, function(resp) {
         btn.disabled = false; btn.textContent = 'Init Repo';
         rbMsg(resp.message || 'Done', resp.status === 'success' ? 'success' : 'error');
@@ -579,11 +648,9 @@ function rbTestTarget(btn) {
     var card = btn.closest('.rb-card');
     var url = card.querySelector('.target-url').value.trim();
     if (!url) { rbMsg('Please enter a repository URL first.', 'error'); return; }
-
     btn.disabled = true; btn.textContent = 'Testing...';
     var body = rbGetPwConfig();
     body.url = url;
-
     rbAjax('test', body, function(resp) {
         btn.disabled = false; btn.textContent = 'Test';
         rbMsg(resp.message || 'Done', resp.status === 'success' ? 'success' : 'error');
@@ -651,7 +718,11 @@ function rbTextToArr(el) {
 }
 
 function escHtml(s) {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function escAttr(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function rbMsg(text, type) {
