@@ -530,13 +530,16 @@ function rbTestTarget(btn) {
 // LOG POLLING
 // =============================================================================
 function rbRefreshLog() {
-    $.get(rbUrl + '?action=log', function(data) {
-        var el = document.getElementById('rb-log');
-        el.textContent = (typeof data === 'string' ? data.trim() : JSON.stringify(data)) || 'No log data.';
-        el.scrollTop = el.scrollHeight;
-    }).fail(function() {
-        document.getElementById('rb-log').textContent = 'Could not load log.';
-    });
+    fetch(rbUrl + '?action=log')
+        .then(function(r) { return r.text(); })
+        .then(function(text) {
+            var el = document.getElementById('rb-log');
+            el.textContent = text.trim() || 'No log data.';
+            el.scrollTop = el.scrollHeight;
+        })
+        .catch(function() {
+            document.getElementById('rb-log').textContent = 'Could not load log.';
+        });
 }
 
 function rbStartLogPoll() {
@@ -597,27 +600,23 @@ function rbMsg(text, type) {
 }
 
 function rbAjax(method, url, body, onSuccess, onError) {
-    var opts = {
-        url: url,
-        type: method,
-        dataType: 'json',
-        success: function(resp) {
-            if (onSuccess) onSuccess(resp);
-        },
-        error: function(jqXHR, status, err) {
-            // Try parsing response as JSON anyway
-            try {
-                var resp = JSON.parse(jqXHR.responseText);
-                if (onSuccess) onSuccess(resp);
-                return;
-            } catch(e) {}
-            if (onError) onError(err || status || 'Request failed');
-            else rbMsg('Request failed: ' + (err || status), 'error');
-        }
-    };
+    var opts = { method: method };
     if (body) {
-        opts.data = body;
-        opts.contentType = 'application/json';
+        opts.headers = { 'Content-Type': 'application/json' };
+        opts.body = body;
     }
-    $.ajax(opts);
+    fetch(url, opts)
+        .then(function(r) { return r.text(); })
+        .then(function(text) {
+            try {
+                var resp = JSON.parse(text);
+                if (onSuccess) onSuccess(resp);
+            } catch(e) {
+                if (onSuccess) onSuccess({ status: 'success', message: text });
+            }
+        })
+        .catch(function(err) {
+            if (onError) onError(String(err));
+            else rbMsg('Request failed: ' + err, 'error');
+        });
 }
