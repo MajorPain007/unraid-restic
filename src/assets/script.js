@@ -1,46 +1,51 @@
 /**
- * Restic Backup Plugin - Frontend (v4)
+ * Restic Backup Plugin - Frontend (v5)
  *
- * ALL API calls use POST with JSON body. No URL params.
- * Inline directory picker (click into path field to browse).
+ * Uses form-encoded POST (compatible with Unraid emhttpd).
+ * Inline directory picker on focus for path fields.
  */
 var rbUrl = '/plugins/restic-backup/ResticBackupAPI.php';
 var rbLogTimer = null;
 var rbActiveJobIdx = 0;
-var rbActiveTree = null; // currently open tree picker element
+var rbActiveTree = null;
 
 // =============================================================================
-// CORE AJAX - Always POST, action in body, no URL params
+// CORE AJAX - form-encoded POST, Unraid-compatible
 // =============================================================================
 function rbAjax(action, data, onSuccess, onError) {
-    var body = data || {};
-    body.action = action;
-    var payload = JSON.stringify(body);
+    var params = 'action=' + encodeURIComponent(action);
+    if (data && Object.keys(data).length > 0) {
+        params += '&data=' + encodeURIComponent(JSON.stringify(data));
+    }
 
     fetch(rbUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params
     })
-    .then(function(r) {
-        if (!r.ok) {
-            throw new Error('HTTP ' + r.status + ' ' + r.statusText);
-        }
-        return r.text();
-    })
+    .then(function(r) { return r.text(); })
     .then(function(text) {
-        // Try to extract JSON even if there's PHP warnings before it
+        if (!text || text.trim() === '') {
+            var msg = 'Empty response from server';
+            if (onError) onError(msg);
+            else rbMsg(msg, 'error');
+            return;
+        }
+        // Extract JSON even if PHP warnings appear before it
         var jsonStart = text.indexOf('{');
-        var jsonText = jsonStart >= 0 ? text.substring(jsonStart) : text;
-
+        if (jsonStart < 0) {
+            var msg = 'No JSON in response: ' + text.substring(0, 200);
+            if (onError) onError(msg);
+            else rbMsg(msg, 'error');
+            return;
+        }
         try {
-            var resp = JSON.parse(jsonText);
+            var resp = JSON.parse(text.substring(jsonStart));
             if (onSuccess) onSuccess(resp);
         } catch(e) {
-            // Could not parse JSON at all - this is an error
-            var errMsg = text.length > 200 ? text.substring(0, 200) + '...' : text;
-            if (onError) onError('Invalid response: ' + errMsg);
-            else rbMsg('Server error: ' + errMsg, 'error');
+            var msg = 'JSON parse error: ' + text.substring(0, 200);
+            if (onError) onError(msg);
+            else rbMsg(msg, 'error');
         }
     })
     .catch(function(err) {
@@ -101,17 +106,25 @@ function rbAddJob() {
 function rbRemoveJob(btn) {
     if (!confirm('Delete this job?')) return;
     var panel = btn.closest('.rb-job-panel');
-    var idx = parseInt(panel.getAttribute('data-job-idx'));
-
     panel.remove();
     var tabs = document.querySelectorAll('.rb-job-tab');
-    if (tabs[idx]) tabs[idx].remove();
-
-    document.querySelectorAll('.rb-job-panel').forEach(function(p, i) { p.setAttribute('data-job-idx', i); });
-    var newTabs = document.querySelectorAll('.rb-job-tab');
-    newTabs.forEach(function(t, i) { t.onclick = function() { rbSwitchJob(i); }; });
-
-    if (newTabs.length > 0) rbSwitchJob(0);
+    var allPanels = document.querySelectorAll('.rb-job-panel');
+    // Remove the tab that matches
+    var tabArr = Array.from(document.querySelectorAll('.rb-job-tab'));
+    // Re-index everything
+    allPanels.forEach(function(p, i) { p.setAttribute('data-job-idx', i); });
+    // Rebuild tabs
+    var tabContainer = document.getElementById('rb-job-tabs');
+    var addBtn = tabContainer.querySelector('button');
+    tabContainer.querySelectorAll('.rb-job-tab').forEach(function(t) { t.remove(); });
+    allPanels.forEach(function(p, i) {
+        var t = document.createElement('div');
+        t.className = 'rb-job-tab';
+        t.textContent = p.querySelector('.job-name').value || 'Job ' + (i + 1);
+        t.onclick = function() { rbSwitchJob(i); };
+        tabContainer.insertBefore(t, addBtn);
+    });
+    if (allPanels.length > 0) rbSwitchJob(0);
 }
 
 function rbJobPanelHtml(id, idx) {
@@ -121,8 +134,10 @@ function rbJobPanelHtml(id, idx) {
     + '  <select class="job-enabled"><option value="1" selected>Enabled</option><option value="0">Disabled</option></select>'
     + '  <button class="rb-btn rb-btn-red rb-btn-sm" onclick="rbRemoveJob(this)">Delete Job</button>'
     + '</div>'
+    // Targets
     + '<div class="rb-section" style="margin-top:10px;"><div class="rb-section-hdr" onclick="rbToggle(this)"><span>Targets</span><span class="arr">&#9660;</span></div>'
     + '<div class="rb-section-body"><div class="job-targets"></div><button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbAddTarget(this)">+ Add Target</button></div></div>'
+    // ZFS
     + '<div class="rb-section"><div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>ZFS Snapshots</span><span class="arr">&#9660;</span></div>'
     + '<div class="rb-section-body hidden"><p style="color:var(--text-muted);margin:0 0 10px;">Create ZFS snapshots before backup for data consistency.</p>'
     + '<div class="rb-row"><label>Enable Snapshots:</label><select class="zfs-enabled"><option value="0" selected>Disabled</option><option value="1">Enabled</option></select></div>'
@@ -133,13 +148,16 @@ function rbJobPanelHtml(id, idx) {
     + '<div class="zfs-ds-picker rb-ds-list" style="display:none;"></div>'
     + '<div class="zfs-ds-manual"></div>'
     + '<button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbAddDatasetInput(this)" style="margin-top:4px;">+ Add Manually</button></div></div></div>'
+    // Sources
     + '<div class="rb-section"><div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Source Directories</span><span class="arr">&#9660;</span></div>'
     + '<div class="rb-section-body hidden"><p style="color:var(--text-muted);margin:0 0 10px;">Directories to include in the backup. Click into a path field to browse.</p>'
     + '<div class="job-sources"></div><button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbAddSource(this)">+ Add Source</button></div></div>'
+    // Excludes
     + '<div class="rb-section"><div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Exclude Patterns</span><span class="arr">&#9660;</span></div>'
     + '<div class="rb-section-body hidden"><p style="color:var(--text-muted);margin:0 0 10px;">One pattern per line.</p>'
     + '<div style="margin-bottom:10px;"><label style="font-weight:bold;display:block;margin-bottom:4px;">Global Excludes:</label><textarea class="rb-excludes job-exc-global" placeholder=".Trash&#10;*.DS_Store"></textarea></div>'
     + '<div><label style="font-weight:bold;display:block;margin-bottom:4px;">Optional Excludes:</label><textarea class="rb-excludes job-exc-optional" placeholder="**/cache/**"></textarea></div></div></div>'
+    // Retention
     + '<div class="rb-section"><div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Retention Policy</span><span class="arr">&#9660;</span></div>'
     + '<div class="rb-section-body hidden"><div class="rb-retention-grid">'
     + '<div class="rb-row"><label>Keep Daily:</label><input type="number" class="ret-daily" value="7" min="0"></div>'
@@ -147,6 +165,7 @@ function rbJobPanelHtml(id, idx) {
     + '<div class="rb-row"><label>Keep Monthly:</label><input type="number" class="ret-monthly" value="0" min="0"></div>'
     + '<div class="rb-row"><label>Keep Yearly:</label><input type="number" class="ret-yearly" value="0" min="0"></div>'
     + '</div></div></div>'
+    // Schedule
     + '<div class="rb-section"><div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Schedule &amp; Integrity Check</span><span class="arr">&#9660;</span></div>'
     + '<div class="rb-section-body hidden">'
     + '<div class="rb-row"><label>Schedule:</label><select class="sched-enabled"><option value="0" selected>Disabled</option><option value="1">Enabled</option></select></div>'
@@ -203,13 +222,12 @@ function rbAddSource(btn) {
 }
 
 // =============================================================================
-// INLINE DIRECTORY PICKER (click into input → tree appears below)
+// INLINE DIRECTORY PICKER - appears below input on click
 // =============================================================================
 function rbInitPickTree() {
     document.querySelectorAll('[data-picktree]').forEach(function(input) {
         if (input._rbPickBound) return;
         input._rbPickBound = true;
-
         input.addEventListener('focus', function() {
             rbOpenTree(input);
         });
@@ -221,29 +239,26 @@ function rbCloseTree() {
         rbActiveTree.remove();
         rbActiveTree = null;
     }
+    document.removeEventListener('mousedown', rbTreeOutsideClick);
 }
 
 function rbOpenTree(input) {
     rbCloseTree();
 
     var startPath = input.value || '/mnt';
-    // Go to parent dir if path doesn't end with /
-    if (startPath !== '/' && startPath.indexOf('/') > 0) {
-        var parts = startPath.replace(/\/+$/, '').split('/');
-        if (parts.length > 2) {
-            startPath = parts.slice(0, -1).join('/') || '/mnt';
-        }
+    if (startPath !== '/' && startPath.charAt(startPath.length - 1) !== '/') {
+        var lastSlash = startPath.lastIndexOf('/');
+        if (lastSlash > 0) startPath = startPath.substring(0, lastSlash);
     }
 
     var tree = document.createElement('div');
     tree.className = 'rb-tree';
-    tree.id = 'rb-active-tree';
 
     var hdr = document.createElement('div');
     hdr.className = 'rb-tree-hdr';
     hdr.innerHTML = '<span class="rb-tree-path">' + escHtml(startPath) + '</span>'
-        + '<button class="rb-btn rb-btn-green rb-btn-sm" onclick="rbTreeSelect()">Select</button>'
-        + '<button class="rb-btn rb-btn-gray rb-btn-sm" style="margin-left:4px;" onclick="rbCloseTree()">Close</button>';
+        + ' <button class="rb-btn rb-btn-green rb-btn-sm" style="margin-left:8px;" onclick="rbTreeSelect()">Select</button>'
+        + ' <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbCloseTree()">Close</button>';
     tree.appendChild(hdr);
 
     var list = document.createElement('div');
@@ -251,7 +266,6 @@ function rbOpenTree(input) {
     list.innerHTML = '<div style="padding:8px;color:var(--text-muted);">Loading...</div>';
     tree.appendChild(list);
 
-    // Insert tree after the input's row
     input.closest('.rb-row').after(tree);
     rbActiveTree = tree;
     tree._rbInput = input;
@@ -259,7 +273,6 @@ function rbOpenTree(input) {
 
     rbLoadTree(tree, startPath);
 
-    // Close on outside click (with delay to avoid instant close)
     setTimeout(function() {
         document.addEventListener('mousedown', rbTreeOutsideClick);
     }, 200);
@@ -268,16 +281,15 @@ function rbOpenTree(input) {
 function rbTreeOutsideClick(e) {
     if (rbActiveTree && !rbActiveTree.contains(e.target) && e.target !== rbActiveTree._rbInput) {
         rbCloseTree();
-        document.removeEventListener('mousedown', rbTreeOutsideClick);
     }
 }
 
 function rbTreeSelect() {
     if (rbActiveTree && rbActiveTree._rbInput) {
-        rbActiveTree._rbInput.value = rbActiveTree._rbPath.replace(/\/+$/, '') || '/';
+        var path = rbActiveTree._rbPath.replace(/\/+$/, '') || '/';
+        rbActiveTree._rbInput.value = path;
     }
     rbCloseTree();
-    document.removeEventListener('mousedown', rbTreeOutsideClick);
 }
 
 function rbLoadTree(tree, path) {
@@ -289,14 +301,11 @@ function rbLoadTree(tree, path) {
         tree.querySelector('.rb-tree-path').textContent = tree._rbPath;
 
         var html = '';
-
-        // Up link
         if (resp.parent && resp.parent !== resp.current) {
             html += '<div class="rb-tree-item rb-tree-up" data-path="' + escAttr(resp.parent) + '">'
                 + '<span class="rb-tree-icon">&#8593;</span> ..</div>';
         }
 
-        // Directories
         var dirs = resp.dirs || [];
         if (dirs.length === 0 && !resp.parent) {
             html = '<div style="padding:8px;color:var(--text-muted);">No directories found</div>';
@@ -309,7 +318,6 @@ function rbLoadTree(tree, path) {
 
         list.innerHTML = html;
 
-        // Attach click handlers
         list.querySelectorAll('.rb-tree-item').forEach(function(item) {
             item.addEventListener('click', function() {
                 var p = item.getAttribute('data-path');
@@ -324,7 +332,7 @@ function rbLoadTree(tree, path) {
 }
 
 // =============================================================================
-// TARGET TYPE
+// TARGET TYPE CHANGE - show/hide browse for local only
 // =============================================================================
 function rbTargetTypeChange(sel) {
     var card = sel.closest('.rb-card');
@@ -340,7 +348,6 @@ function rbTargetTypeChange(sel) {
     };
     urlInput.placeholder = placeholders[type] || '';
 
-    // Only show dir picker for local type
     if (type === 'local') {
         urlInput.setAttribute('data-picktree', 'dir');
     } else {
@@ -548,8 +555,6 @@ function rbSave() {
         if (resp.status === 'success') {
             msg.textContent = resp.message || 'Saved!';
             msg.style.color = '#27ae60';
-
-            // Auto-init: check local targets that might need init
             rbAutoInit(config);
         } else {
             msg.textContent = 'ERROR: ' + (resp.message || JSON.stringify(resp));
@@ -575,20 +580,19 @@ function rbAutoInit(config) {
         job.targets.forEach(function(target) {
             if (!target.enabled || !target.url) return;
 
-            // Test connection first, if it fails try to init
-            var body = { url: target.url };
-            body.password_mode = pw.password_mode;
-            body.password_file = pw.password_file;
-            body.password_inline = pw.password_inline;
+            var body = {
+                url: target.url,
+                password_mode: pw.password_mode,
+                password_file: pw.password_file,
+                password_inline: pw.password_inline
+            };
 
             rbAjax('test', body, function(resp) {
                 if (resp.status !== 'success') {
-                    // Repo doesn't exist yet - try to init
                     rbAjax('init', body, function(initResp) {
                         if (initResp.status === 'success') {
                             rbMsg('Repository auto-initialized: ' + (target.name || target.url), 'success');
                         }
-                        // Silently ignore init failures (might be remote targets etc.)
                     });
                 }
             });
@@ -661,13 +665,12 @@ function rbTestTarget(btn) {
 }
 
 // =============================================================================
-// LOG POLLING
+// LOG
 // =============================================================================
 function rbRefreshLog() {
     rbAjax('log', {}, function(resp) {
         var el = document.getElementById('rb-log');
-        var text = resp.log || '';
-        el.textContent = text.trim() || 'No log data.';
+        el.textContent = (resp.log || '').trim() || 'No log data.';
         el.scrollTop = el.scrollHeight;
     });
 }
@@ -718,16 +721,18 @@ function rbTextToArr(el) {
 }
 
 function escHtml(s) {
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
 }
 
 function escAttr(s) {
-    return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 }
 
 function rbMsg(text, type) {
     if (typeof swal === 'function') {
-        swal({title: type === 'success' ? 'Success' : 'Error', text: text, type: type === 'success' ? 'success' : 'error'});
+        swal({ title: type === 'success' ? 'Success' : 'Error', text: text, type: type === 'success' ? 'success' : 'error' });
     } else {
         alert(text);
     }
