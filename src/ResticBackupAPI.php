@@ -194,6 +194,23 @@ switch ($action) {
         break;
 
     // =========================================================================
+    // BROWSE DIRECTORIES
+    // =========================================================================
+    case 'browse':
+        $path = $input['path'] ?? '/mnt';
+        $path = str_replace(['..', "\0"], '', $path);
+        if (!$path || $path[0] !== '/') {
+            $path = '/mnt';
+        }
+        $dirs = restic_list_dirs($path);
+        echo json_encode([
+            'current' => $path,
+            'parent'  => dirname($path),
+            'dirs'    => $dirs,
+        ]);
+        break;
+
+    // =========================================================================
     // LIST ZFS DATASETS
     // =========================================================================
     case 'datasets':
