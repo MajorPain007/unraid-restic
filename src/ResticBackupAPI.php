@@ -1,17 +1,52 @@
 <?php
 /**
- * Restic Backup Plugin - API Endpoint (v4)
+ * Restic Backup Plugin - API Endpoint (v5)
  *
- * Uses standard form-encoded POST (compatible with Unraid's emhttpd).
- * Action comes from $_POST['action'], data from $_POST['data'] (JSON string).
+ * Reads action + data from multiple sources for maximum compatibility:
+ *   1. $_POST (standard form-encoded, preferred)
+ *   2. php://input parsed as form-encoded
+ *   3. php://input parsed as JSON
+ *
+ * Never uses http_response_code() - some reverse proxies strip the body
+ * on non-200 responses, causing empty responses in the browser.
  */
 require_once '/usr/local/emhttp/plugins/restic-backup/include/helpers.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
-$action = $_POST['action'] ?? '';
-$data = json_decode($_POST['data'] ?? '{}', true);
-if (!is_array($data)) $data = [];
+// --- Determine action and data from request ---
+$action = '';
+$data   = [];
+
+// Method 1: $_POST (standard form-encoded)
+if (!empty($_POST['action'])) {
+    $action = $_POST['action'];
+    $raw_data = $_POST['data'] ?? '{}';
+    $data = json_decode($raw_data, true);
+    if (!is_array($data)) $data = [];
+}
+
+// Method 2+3: php://input fallback
+if ($action === '') {
+    $raw = @file_get_contents('php://input');
+    if ($raw && strlen($raw) > 0) {
+        // Try JSON first
+        $input = @json_decode($raw, true);
+        if (is_array($input) && !empty($input['action'])) {
+            $action = $input['action'];
+            $data = $input;
+        } else {
+            // Try form-encoded
+            parse_str($raw, $parsed);
+            if (!empty($parsed['action'])) {
+                $action = $parsed['action'];
+                $raw_data = $parsed['data'] ?? '{}';
+                $data = json_decode($raw_data, true);
+                if (!is_array($data)) $data = [];
+            }
+        }
+    }
+}
 
 switch ($action) {
 
@@ -22,12 +57,9 @@ switch ($action) {
         $config = $data['config'] ?? null;
 
         if (!is_array($config)) {
-            http_response_code(400);
             echo json_encode([
                 'status'  => 'error',
                 'message' => 'No config data received',
-                'post_keys' => array_keys($_POST),
-                'data_len' => strlen($_POST['data'] ?? ''),
             ]);
             break;
         }
@@ -49,7 +81,6 @@ switch ($action) {
                 'message' => "Saved ({$fileSize} bytes, {$jobCount} jobs)",
             ]);
         } else {
-            http_response_code(500);
             echo json_encode([
                 'status'  => 'error',
                 'message' => 'Write failed! dir=' . RESTIC_CONFIG_DIR
@@ -172,7 +203,7 @@ switch ($action) {
         echo json_encode([
             'running'     => restic_is_running(),
             'pid'         => restic_get_pid(),
-            'api_version' => 4,
+            'api_version' => 5,
         ]);
         break;
 
@@ -251,7 +282,6 @@ switch ($action) {
     // DEFAULT
     // =========================================================================
     default:
-        http_response_code(400);
         echo json_encode([
             'status'  => 'error',
             'message' => 'Unknown or missing action',
