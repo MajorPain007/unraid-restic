@@ -405,16 +405,17 @@ function rbTargetTypeChange(sel) {
     var newPfx = rbPrefixes[newType] || '';
     var suffix = urlInput.value;
 
-    // Transition: local → non-local: strip any accidental prefix from value
+    // Strip old prefix from suffix so we always work with the bare path/address
+    if (oldType !== 'local' && oldPfx && suffix.indexOf(oldPfx) === 0) {
+        suffix = suffix.slice(oldPfx.length);
+    }
     if (oldType === 'local') {
+        // Coming from local: strip any accidental protocol prefix
         suffix = suffix.replace(/^[a-z][a-z0-9+.-]*:(?:\/\/)?/, '');
     }
-    // Transition: non-local → local: combine old prefix + suffix into full path
-    if (newType === 'local') {
-        urlInput.value = oldPfx + suffix;
-    } else {
-        urlInput.value = suffix;
-    }
+
+    // For local the value IS the full path; for others it's the suffix after the prefix span
+    urlInput.value = suffix;
 
     // Update prefix span
     if (pfxSpan) {
