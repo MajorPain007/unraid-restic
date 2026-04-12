@@ -403,9 +403,10 @@ switch ($action) {
             break;
         }
 
-        // Sanitize path — must be absolute, no null bytes
+        // Sanitize + normalise path — must be absolute, no null bytes, no trailing slash
         $path = str_replace("\0", '', $path);
-        if (!$path || $path[0] !== '/') $path = '/';
+        $path = rtrim($path, '/');
+        if ($path === '' || $path[0] !== '/') $path = '/';
 
         $tc = restic_get_target_config($job_id, $target_id);
         if (!$tc) {
@@ -415,40 +416,58 @@ switch ($action) {
 
         $env_str = restic_build_env_str($tc['env']);
         $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
-        // List from root so we get all directory entries; filter to direct children in PHP.
-        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
-             . ($sfx ? " $sfx" : '')
-             . " ls --json " . escapeshellarg($snapshot_id) . " /"
-             . " 2>&1";
 
-        $output = [];
-        exec($cmd, $output, $ret);
+        // Cache the full snapshot listing in /tmp keyed by snapshot ID.
+        // This avoids relying on restic ls path-argument behaviour (which varies
+        // across versions and may return only the dir node itself, not its children).
+        // The cache is valid for 5 minutes; PHP then filters to direct children.
+        $safe_id    = preg_replace('/[^a-f0-9]/', '', strtolower($snapshot_id));
+        $cache_file = "/tmp/restic-ls-{$safe_id}.json";
+        $cache_ttl  = 300; // seconds
 
-        if ($ret !== 0) {
-            echo json_encode(['status' => 'error', 'message' => implode("\n", $output)]);
-            break;
+        $raw_output = null;
+        if (file_exists($cache_file) && (time() - filemtime($cache_file)) < $cache_ttl) {
+            $raw_output = file_get_contents($cache_file);
         }
 
-        // restic ls --json emits one JSON object per line — filter to direct children only.
-        // Use string-prefix matching (more robust than dirname for edge cases).
-        $norm   = rtrim($path, '/'); // e.g. "/tmp/restic-backup-root/abc"
-        $prefix = ($norm === '') ? '/' : $norm . '/'; // prefix all children must start with
+        if ($raw_output === null) {
+            // Run restic ls without a path argument to get the full listing
+            $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+                 . ($sfx ? " $sfx" : '')
+                 . " ls --json " . escapeshellarg($snapshot_id)
+                 . " 2>&1";
+            $output = [];
+            exec($cmd, $output, $ret);
+            if ($ret !== 0) {
+                echo json_encode(['status' => 'error', 'message' => implode("\n", $output)]);
+                break;
+            }
+            $raw_output = implode("\n", $output);
+            @file_put_contents($cache_file, $raw_output);
+        }
+
+        // Filter to direct children of $path.
+        // $norm   = '' (root) or '/some/path' (subdir, no trailing slash)
+        // $prefix = '/' (root) or '/some/path/' (subdir)
+        $norm   = ($path === '/') ? '' : $path;
+        $prefix = ($norm === '') ? '/' : $norm . '/';
         $items  = [];
-        foreach ($output as $line) {
+        foreach (explode("\n", $raw_output) as $line) {
             $line = trim($line);
             if ($line === '') continue;
             $obj = @json_decode($line, true);
-            if (!is_array($obj)) continue;
-            $p = rtrim($obj['path'] ?? '', '/');
-            if ($p === '' || $p === $norm) continue; // skip empty / self
-            // Must start with prefix
-            if (strpos($p, $prefix) !== 0) continue;
-            // No further slash after the prefix → direct child
+            if (!is_array($obj) || !isset($obj['path'])) continue; // skip snapshot header + blanks
+            $p = rtrim($obj['path'], '/'); // normalise dir paths (restic sometimes adds trailing slash)
+            if ($p === '' || $p === $norm) continue; // skip root or self
+            if (strpos($p, $prefix) !== 0) continue; // not under this dir
             $rest = substr($p, strlen($prefix));
-            if ($rest === '' || strpos($rest, '/') !== false) continue;
+            if ($rest === '' || strpos($rest, '/') !== false) continue; // skip deeper items
+            $obj['path'] = $p; // return normalised path (no trailing slash)
+            if (!isset($obj['name']) || $obj['name'] === '') $obj['name'] = basename($p);
             $items[] = $obj;
         }
-        // Sort: dirs first, then alphabetical
+
+        // Sort: dirs first, then alphabetical by name
         usort($items, function($a, $b) {
             $aD = ($a['type'] ?? '') === 'dir' ? 0 : 1;
             $bD = ($b['type'] ?? '') === 'dir' ? 0 : 1;
