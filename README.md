@@ -23,7 +23,7 @@ An Unraid plugin that provides a web GUI for managing [restic](https://restic.ne
 1. In Unraid, go to **Plugins** > **Install Plugin**
 2. Paste the plugin URL:
    ```
-   https://raw.githubusercontent.com/MajorPain007/unraid-restic/main/restic-backup.plg
+   https://raw.githubusercontent.com/MajorPain007/unraid-restic/main/src/restic-backup.plg
    ```
 3. Click **Install**
 
@@ -89,15 +89,19 @@ Enable automatic backups with presets or a custom cron expression.
 ## Project Structure
 
 ```
-restic-backup.plg              # Plugin installer
+archive/                       # Versioned txz packages
+scripts/
+  build.sh                     # Build script (produces txz + MD5)
 src/
+  restic-backup.plg            # Plugin installer
   restic-backup.page           # Unraid page definition
   ResticBackup.php             # Main GUI (single page, collapsible sections)
+  ResticBackupAPI.php          # API endpoint
   include/
     helpers.php                # Config management, utility functions
-    exec.php                   # AJAX endpoints
   scripts/
     restic-backup.py           # Python backend
+    setup_cron.sh              # Restores cron jobs on boot
   assets/
     script.js                  # Frontend logic
 ```
