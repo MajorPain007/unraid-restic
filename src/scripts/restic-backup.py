@@ -232,7 +232,12 @@ def create_zfs_snapshots(zfs_conf):
 def mount_zfs_snapshots(snapshots, mount_root):
     for ds, snap_name in snapshots:
         real_path = f"/mnt/{ds}/.zfs/snapshot/{snap_name}"
-        target = os.path.join(mount_root, "zfs-snapshots", ds.replace("/", "_"))
+        # Strip pool name (first segment) so the backup path mirrors the dataset
+        # hierarchy without the pool prefix.
+        # e.g. cache/appdata/crowdsec-agent → appdata/crowdsec-agent
+        parts = ds.split("/")
+        rel_path = "/".join(parts[1:]) if len(parts) > 1 else parts[0]
+        target = os.path.join(mount_root, rel_path)
         if not os.path.exists(real_path):
             logger.warn(f"Snapshot path missing: {real_path}")
             continue
