@@ -141,6 +141,46 @@ def release_lock():
             except: pass
 
 # ==============================================================================
+# TARGET CREDENTIALS
+# ==============================================================================
+
+def build_target_env(target):
+    """Return os.environ copy with credentials injected for the target type."""
+    env = os.environ.copy()
+    t = target.get("type", "local")
+    creds = target.get("credentials", {})
+    if t == "s3":
+        if creds.get("aws_access_key_id"):
+            env["AWS_ACCESS_KEY_ID"] = creds["aws_access_key_id"]
+        if creds.get("aws_secret_access_key"):
+            env["AWS_SECRET_ACCESS_KEY"] = creds["aws_secret_access_key"]
+        if creds.get("aws_region"):
+            env["AWS_DEFAULT_REGION"] = creds["aws_region"]
+    elif t == "b2":
+        if creds.get("b2_account_id"):
+            env["B2_ACCOUNT_ID"] = creds["b2_account_id"]
+        if creds.get("b2_account_key"):
+            env["B2_ACCOUNT_KEY"] = creds["b2_account_key"]
+    return env
+
+def get_target_url(target):
+    """Return the restic repository URL, injecting REST credentials if set."""
+    url = target.get("url", "")
+    if target.get("type") == "rest":
+        creds = target.get("credentials", {})
+        user = creds.get("rest_user", "")
+        passwd = creds.get("rest_pass", "")
+        if user and passwd and url.startswith("rest:"):
+            from urllib.parse import urlparse, urlunparse, quote
+            inner = url[5:]
+            p = urlparse(inner)
+            netloc = "{}:{}@{}".format(quote(user, safe=""), quote(passwd, safe=""), p.hostname)
+            if p.port:
+                netloc += ":{}".format(p.port)
+            url = "rest:" + urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment))
+    return url
+
+# ==============================================================================
 # ZFS
 # ==============================================================================
 
@@ -271,7 +311,8 @@ def run_job(config, job):
         for target in targets:
             if not target.get("enabled", True):
                 continue
-            url = target.get("url", "")
+            url = get_target_url(target)
+            target_env = build_target_env(target)
             name = target.get("name", url)
             if not url:
                 logger.warn(f"Target has no URL: {name}")
@@ -301,7 +342,7 @@ def run_job(config, job):
             t_up = time.time()
             ok = False
             for attempt in range(1, max_retries + 1):
-                result = run_cmd(cmd, cwd=job_root, check=False)
+                result = run_cmd(cmd, cwd=job_root, check=False, env=target_env)
                 if result is True:
                     ok = True
                     break
@@ -328,11 +369,11 @@ def run_job(config, job):
                 if ky: prune_cmd.extend(["--keep-yearly", str(ky)])
 
                 logger.info("  Pruning...")
-                run_cmd(prune_cmd, check=False)
+                run_cmd(prune_cmd, check=False, env=target_env)
 
                 # Stats
                 stats = run_cmd(["restic", "-r", url, "stats", "latest",
-                                 "--mode", "restore-size"], check=False, capture_output=True)
+                                 "--mode", "restore-size"], check=False, capture_output=True, env=target_env)
                 if stats and isinstance(stats, str):
                     for line in stats.splitlines():
                         if "Total Size" in line or "Total File Count" in line:
@@ -352,7 +393,7 @@ def run_job(config, job):
                 if should_check:
                     pct = check_conf.get("percentage", "2%")
                     logger.info(f"  Integrity check ({pct})...")
-                    cr = run_cmd(["restic", "-r", url, "check", f"--read-data-subset={pct}"], check=False)
+                    cr = run_cmd(["restic", "-r", url, "check", f"--read-data-subset={pct}"], check=False, env=target_env)
                     if cr is True:
                         logger.info("  Check passed")
                     else:

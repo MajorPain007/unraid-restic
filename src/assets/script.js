@@ -187,11 +187,27 @@ function rbJobPanelHtml(id, idx) {
 // =============================================================================
 // ADD TARGET / SOURCE
 // =============================================================================
+var rbCredsHtml = ''
+    + '<div class="target-creds target-creds-sftp" style="display:none;">'
+    +   '<div class="rb-hint" style="padding-left:0;margin-bottom:6px;">SFTP uses SSH key auth — configure in <code>/root/.ssh/config</code>.</div></div>'
+    + '<div class="target-creds target-creds-s3" style="display:none;">'
+    +   '<div class="rb-row"><label>Access Key ID:</label><input type="text" class="cred-s3-key" value="" placeholder="AKIAIOSFODNN7EXAMPLE"></div>'
+    +   '<div class="rb-row"><label>Secret Access Key:</label><input type="password" class="cred-s3-secret" value="" placeholder="wJalrXUtnFEMI/K7MDENG..."></div>'
+    +   '<div class="rb-row"><label>Region:</label><input type="text" class="cred-s3-region" value="" placeholder="us-east-1 (optional)"></div></div>'
+    + '<div class="target-creds target-creds-b2" style="display:none;">'
+    +   '<div class="rb-row"><label>Account ID:</label><input type="text" class="cred-b2-id" value="" placeholder="B2 Account ID"></div>'
+    +   '<div class="rb-row"><label>Application Key:</label><input type="password" class="cred-b2-key" value="" placeholder="B2 Application Key"></div></div>'
+    + '<div class="target-creds target-creds-rest" style="display:none;">'
+    +   '<div class="rb-row"><label>Username:</label><input type="text" class="cred-rest-user" value="" placeholder="optional"></div>'
+    +   '<div class="rb-row"><label>Password:</label><input type="password" class="cred-rest-pass" value="" placeholder="optional"></div></div>'
+    + '<div class="target-creds target-creds-rclone" style="display:none;">'
+    +   '<div class="rb-hint" style="padding-left:0;margin-bottom:6px;">Rclone uses its own config (<code>rclone config</code>). No credentials needed here.</div></div>';
+
 function rbAddTarget(btn) {
     var list = btn.closest('.rb-section-body').querySelector('.job-targets');
     var n = list.querySelectorAll('.rb-card').length + 1;
     var id = rbGenId();
-    var html = '<div class="rb-card" data-id="' + id + '">'
+    var html = '<div class="rb-card" data-id="' + id + '" data-type="local">'
         + '<div class="rb-card-hdr"><span class="rb-card-title">Target #' + n + '</span><div style="display:flex;gap:4px;">'
         + '<button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbInitRepo(this)">Init Repo</button>'
         + '<button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbTestTarget(this)">Test</button>'
@@ -200,6 +216,7 @@ function rbAddTarget(btn) {
         + '<option value="local">Local Path</option><option value="sftp">SFTP</option><option value="s3">S3 / Minio</option>'
         + '<option value="b2">Backblaze B2</option><option value="rest">REST Server</option><option value="rclone">Rclone</option></select></div>'
         + '<div class="rb-row"><label>Repository URL:</label><input type="text" class="target-url" value="" placeholder="/mnt/disks/backup/restic" data-picktree="dir"></div>'
+        + rbCredsHtml
         + '<div class="rb-row"><label>Name:</label><input type="text" class="target-name" value="" placeholder="e.g. Hetzner Cloud"></div>'
         + '<div class="rb-row"><label>Optional Excludes:</label><select class="target-opt-exc"><option value="0" selected>No</option><option value="1">Yes</option></select></div>'
         + '<div class="rb-row"><label>Enabled:</label><select class="target-enabled"><option value="1" selected>Yes</option><option value="0">No</option></select></div>'
@@ -334,29 +351,57 @@ function rbLoadTree(tree, path) {
 }
 
 // =============================================================================
-// TARGET TYPE CHANGE - show/hide browse for local only
+// TARGET TYPE CHANGE - prefix, credentials, file browser
 // =============================================================================
+var rbPrefixes = {
+    local:  '',
+    sftp:   'sftp://',
+    s3:     's3:',
+    b2:     'b2:',
+    rest:   'rest:',
+    rclone: 'rclone:'
+};
+
+var rbPlaceholders = {
+    local:  '/mnt/disks/backup/restic',
+    sftp:   'sftp://user@host:/path/to/repo',
+    s3:     's3:https://s3.amazonaws.com/bucket/path',
+    b2:     'b2:bucketname/path',
+    rest:   'rest:https://host:8000/',
+    rclone: 'rclone:remote:path'
+};
+
 function rbTargetTypeChange(sel) {
     var card = sel.closest('.rb-card');
     var urlInput = card.querySelector('.target-url');
-    var type = sel.value;
-    var placeholders = {
-        'local': '/mnt/disks/backup/restic',
-        'sftp': 'sftp://user@host:/path/to/repo',
-        's3': 's3:https://s3.amazonaws.com/bucket/path',
-        'b2': 'b2:bucketname:path',
-        'rest': 'rest:http://host:8000/',
-        'rclone': 'rclone:remote:path'
-    };
-    urlInput.placeholder = placeholders[type] || '';
+    var oldType = card.getAttribute('data-type') || 'local';
+    var newType = sel.value;
+    card.setAttribute('data-type', newType);
 
-    if (type === 'local') {
+    // Swap URL prefix
+    var oldPrefix = rbPrefixes[oldType] || '';
+    var newPrefix = rbPrefixes[newType] || '';
+    var val = urlInput.value;
+    if (!val || val === oldPrefix) {
+        urlInput.value = newPrefix;
+    } else if (oldPrefix && val.indexOf(oldPrefix) === 0) {
+        urlInput.value = newPrefix + val.substring(oldPrefix.length);
+    }
+    urlInput.placeholder = rbPlaceholders[newType] || '';
+
+    // File browser
+    if (newType === 'local') {
         urlInput.setAttribute('data-picktree', 'dir');
     } else {
         urlInput.removeAttribute('data-picktree');
         urlInput._rbPickBound = false;
     }
     rbInitPickTree();
+
+    // Show/hide credential fields
+    card.querySelectorAll('.target-creds').forEach(function(d) { d.style.display = 'none'; });
+    var credsDiv = card.querySelector('.target-creds-' + newType);
+    if (credsDiv) credsDiv.style.display = '';
 }
 
 // =============================================================================
@@ -518,7 +563,8 @@ function rbCollect() {
                 url: card.querySelector('.target-url').value.trim(),
                 name: card.querySelector('.target-name').value.trim(),
                 use_optional_excludes: card.querySelector('.target-opt-exc').value === '1',
-                enabled: card.querySelector('.target-enabled').value === '1'
+                enabled: card.querySelector('.target-enabled').value === '1',
+                credentials: rbGetTargetCreds(card)
             });
         });
 
@@ -540,6 +586,22 @@ function rbCollect() {
     });
 
     return config;
+}
+
+// =============================================================================
+// TARGET CREDENTIAL HELPER
+// =============================================================================
+function rbGetTargetCreds(card) {
+    function v(sel) { var el = card.querySelector(sel); return el ? el.value.trim() : ''; }
+    return {
+        aws_access_key_id:     v('.cred-s3-key'),
+        aws_secret_access_key: v('.cred-s3-secret'),
+        aws_region:            v('.cred-s3-region'),
+        b2_account_id:         v('.cred-b2-id'),
+        b2_account_key:        v('.cred-b2-key'),
+        rest_user:             v('.cred-rest-user'),
+        rest_pass:             v('.cred-rest-pass')
+    };
 }
 
 // =============================================================================
@@ -641,6 +703,8 @@ function rbInitRepo(btn) {
     btn.disabled = true; btn.textContent = 'Init...';
     var body = rbGetPwConfig();
     body.url = url;
+    body.type = card.getAttribute('data-type') || 'local';
+    body.credentials = rbGetTargetCreds(card);
     rbAjax('init', body, function(resp) {
         btn.disabled = false; btn.textContent = 'Init Repo';
         rbMsg(resp.message || 'Done', resp.status === 'success' ? 'success' : 'error');
@@ -657,6 +721,8 @@ function rbTestTarget(btn) {
     btn.disabled = true; btn.textContent = 'Testing...';
     var body = rbGetPwConfig();
     body.url = url;
+    body.type = card.getAttribute('data-type') || 'local';
+    body.credentials = rbGetTargetCreds(card);
     rbAjax('test', body, function(resp) {
         btn.disabled = false; btn.textContent = 'Test';
         rbMsg(resp.message || 'Done', resp.status === 'success' ? 'success' : 'error');

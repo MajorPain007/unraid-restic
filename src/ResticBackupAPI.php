@@ -64,6 +64,43 @@ if ($action === '') {
     }
 }
 
+/**
+ * Build env-var prefix for restic based on target type + credentials.
+ * Returns a string like "AWS_ACCESS_KEY_ID='...' AWS_SECRET_ACCESS_KEY='...' "
+ */
+function restic_creds_env(string $type, array $creds): string {
+    $env = '';
+    if ($type === 's3') {
+        if (!empty($creds['aws_access_key_id']))
+            $env .= 'AWS_ACCESS_KEY_ID=' . escapeshellarg($creds['aws_access_key_id']) . ' ';
+        if (!empty($creds['aws_secret_access_key']))
+            $env .= 'AWS_SECRET_ACCESS_KEY=' . escapeshellarg($creds['aws_secret_access_key']) . ' ';
+        if (!empty($creds['aws_region']))
+            $env .= 'AWS_DEFAULT_REGION=' . escapeshellarg($creds['aws_region']) . ' ';
+    } elseif ($type === 'b2') {
+        if (!empty($creds['b2_account_id']))
+            $env .= 'B2_ACCOUNT_ID=' . escapeshellarg($creds['b2_account_id']) . ' ';
+        if (!empty($creds['b2_account_key']))
+            $env .= 'B2_ACCOUNT_KEY=' . escapeshellarg($creds['b2_account_key']) . ' ';
+    }
+    return $env;
+}
+
+/**
+ * Inject REST credentials into the URL.
+ * rest:https://host:8000/ + user/pass → rest:https://user:pass@host:8000/
+ */
+function restic_inject_rest_creds(string $url, array $creds): string {
+    $user = $creds['rest_user'] ?? '';
+    $pass = $creds['rest_pass'] ?? '';
+    if (!$user || !$pass || substr($url, 0, 5) !== 'rest:') return $url;
+    $inner = substr($url, 5);
+    if (preg_match('#^(https?://)(.+)$#', $inner, $m)) {
+        return 'rest:' . $m[1] . rawurlencode($user) . ':' . rawurlencode($pass) . '@' . $m[2];
+    }
+    return $url;
+}
+
 switch ($action) {
 
     // =========================================================================
@@ -154,17 +191,21 @@ switch ($action) {
         $pw_mode = $data['password_mode'] ?? 'file';
         $pw_file = $data['password_file'] ?? '';
         $pw_inline = $data['password_inline'] ?? '';
+        $type = $data['type'] ?? 'local';
+        $creds = is_array($data['credentials'] ?? null) ? $data['credentials'] : [];
 
         if (!$url) {
             echo json_encode(['status' => 'error', 'message' => 'No repository URL provided']);
             break;
         }
 
-        $env = '';
+        if ($type === 'rest') $url = restic_inject_rest_creds($url, $creds);
+
+        $env = restic_creds_env($type, $creds);
         if ($pw_mode === 'file' && $pw_file) {
-            $env = 'RESTIC_PASSWORD_FILE=' . escapeshellarg($pw_file);
+            $env .= 'RESTIC_PASSWORD_FILE=' . escapeshellarg($pw_file);
         } elseif ($pw_mode === 'inline' && $pw_inline) {
-            $env = 'RESTIC_PASSWORD=' . escapeshellarg($pw_inline);
+            $env .= 'RESTIC_PASSWORD=' . escapeshellarg($pw_inline);
         }
 
         $cmd = "{$env} restic -r " . escapeshellarg($url) . " init 2>&1";
@@ -187,17 +228,21 @@ switch ($action) {
         $pw_mode = $data['password_mode'] ?? 'file';
         $pw_file = $data['password_file'] ?? '';
         $pw_inline = $data['password_inline'] ?? '';
+        $type = $data['type'] ?? 'local';
+        $creds = is_array($data['credentials'] ?? null) ? $data['credentials'] : [];
 
         if (!$url) {
             echo json_encode(['status' => 'error', 'message' => 'No repository URL provided']);
             break;
         }
 
-        $env = '';
+        if ($type === 'rest') $url = restic_inject_rest_creds($url, $creds);
+
+        $env = restic_creds_env($type, $creds);
         if ($pw_mode === 'file' && $pw_file) {
-            $env = 'RESTIC_PASSWORD_FILE=' . escapeshellarg($pw_file);
+            $env .= 'RESTIC_PASSWORD_FILE=' . escapeshellarg($pw_file);
         } elseif ($pw_mode === 'inline' && $pw_inline) {
-            $env = 'RESTIC_PASSWORD=' . escapeshellarg($pw_inline);
+            $env .= 'RESTIC_PASSWORD=' . escapeshellarg($pw_inline);
         }
 
         $cmd = "{$env} restic -r " . escapeshellarg($url) . " snapshots --latest 1 2>&1";

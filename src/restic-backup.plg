@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "restic-backup">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.04.12.02">
-<!ENTITY md5       "17dbaa0bab4025552314114568c951f2">
+<!ENTITY version   "2026.04.12.03">
+<!ENTITY md5       "cb9f2bd8d62484bb19b2a475da4eb7ef">
 <!ENTITY launch    "Settings/ResticBackup">
 <!ENTITY github    "MajorPain007/unraid-restic">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/src/&name;.plg">
@@ -21,6 +21,15 @@
         icon="shield">
 
 <CHANGES>
+## Version 2026.04.12.03
+- Add per-type credential fields: S3 (Access Key, Secret, Region),
+  B2 (Account ID, Application Key), REST (Username, Password)
+- SFTP and Rclone show info hint instead (no credentials needed in plugin)
+- Auto-prefix URL when type changes (sftp://, s3:, b2:, rest:, rclone:)
+- REST credentials injected into URL at backup/test/init time
+- S3/B2 credentials passed as environment variables to restic
+- Credential fields hidden/shown dynamically when target type is changed
+
 ## Version 2026.04.12.02
 - Fix file browser appearing for non-local target types (SFTP, S3, etc.)
 - Fix save error "unlink: No such file or directory" — error handler now

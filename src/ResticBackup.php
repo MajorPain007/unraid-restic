@@ -179,7 +179,8 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
                     <div class="rb-section-body">
                         <div class="job-targets">
                             <?php foreach (($j['targets'] ?? []) as $ti => $t): ?>
-                            <div class="rb-card" data-id="<?= htmlspecialchars($t['id'] ?? '') ?>">
+                            <?php $ttype = $t['type'] ?? 'local'; $tcreds = $t['credentials'] ?? []; ?>
+                            <div class="rb-card" data-id="<?= htmlspecialchars($t['id'] ?? '') ?>" data-type="<?= htmlspecialchars($ttype) ?>">
                                 <div class="rb-card-hdr">
                                     <span class="rb-card-title">Target #<?= $ti+1 ?></span>
                                     <div style="display:flex;gap:4px;">
@@ -202,6 +203,26 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
                                 <div class="rb-row">
                                     <label>Repository URL:</label>
                                     <input type="text" class="target-url" value="<?= htmlspecialchars($t['url'] ?? '') ?>" placeholder="<?= ($t['type'] ?? 'local') === 'local' ? '/mnt/disks/backup/restic' : 'sftp://user@host:/path' ?>"<?= ($t['type'] ?? 'local') === 'local' ? ' data-picktree="dir"' : '' ?>>
+                                </div>
+                                <!-- Credentials per type -->
+                                <div class="target-creds target-creds-sftp"<?= $ttype !== 'sftp' ? ' style="display:none;"' : '' ?>>
+                                    <div class="rb-hint" style="padding-left:0;margin-bottom:6px;">SFTP uses SSH key auth — configure in <code>/root/.ssh/config</code>.</div>
+                                </div>
+                                <div class="target-creds target-creds-s3"<?= $ttype !== 's3' ? ' style="display:none;"' : '' ?>>
+                                    <div class="rb-row"><label>Access Key ID:</label><input type="text" class="cred-s3-key" value="<?= htmlspecialchars($tcreds['aws_access_key_id'] ?? '') ?>" placeholder="AKIAIOSFODNN7EXAMPLE"></div>
+                                    <div class="rb-row"><label>Secret Access Key:</label><input type="password" class="cred-s3-secret" value="<?= htmlspecialchars($tcreds['aws_secret_access_key'] ?? '') ?>" placeholder="wJalrXUtnFEMI/K7MDENG..."></div>
+                                    <div class="rb-row"><label>Region:</label><input type="text" class="cred-s3-region" value="<?= htmlspecialchars($tcreds['aws_region'] ?? '') ?>" placeholder="us-east-1 (optional)"></div>
+                                </div>
+                                <div class="target-creds target-creds-b2"<?= $ttype !== 'b2' ? ' style="display:none;"' : '' ?>>
+                                    <div class="rb-row"><label>Account ID:</label><input type="text" class="cred-b2-id" value="<?= htmlspecialchars($tcreds['b2_account_id'] ?? '') ?>" placeholder="B2 Account ID"></div>
+                                    <div class="rb-row"><label>Application Key:</label><input type="password" class="cred-b2-key" value="<?= htmlspecialchars($tcreds['b2_account_key'] ?? '') ?>" placeholder="B2 Application Key"></div>
+                                </div>
+                                <div class="target-creds target-creds-rest"<?= $ttype !== 'rest' ? ' style="display:none;"' : '' ?>>
+                                    <div class="rb-row"><label>Username:</label><input type="text" class="cred-rest-user" value="<?= htmlspecialchars($tcreds['rest_user'] ?? '') ?>" placeholder="optional"></div>
+                                    <div class="rb-row"><label>Password:</label><input type="password" class="cred-rest-pass" value="<?= htmlspecialchars($tcreds['rest_pass'] ?? '') ?>" placeholder="optional"></div>
+                                </div>
+                                <div class="target-creds target-creds-rclone"<?= $ttype !== 'rclone' ? ' style="display:none;"' : '' ?>>
+                                    <div class="rb-hint" style="padding-left:0;margin-bottom:6px;">Rclone uses its own config (<code>rclone config</code>). No credentials needed here.</div>
                                 </div>
                                 <div class="rb-row">
                                     <label>Name:</label>
