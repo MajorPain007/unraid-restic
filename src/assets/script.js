@@ -931,7 +931,7 @@ function rbOpenSnapBrowser(snapshotId, shortId, paths) {
     document.getElementById('snap-browser-id').textContent    = shortId;
     document.getElementById('snap-restore-msg').style.display = 'none';
     document.getElementById('snap-browser').style.display     = '';
-    rbSnapBrowse(startPath);
+    rbSnapBrowse('/');
 }
 
 // Build breadcrumb HTML relative to basePath
