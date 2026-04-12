@@ -295,10 +295,10 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                             <div class="zfs-ds-picker rb-ds-list" style="display:none;"></div>
                             <div class="zfs-ds-manual">
                                 <?php foreach (($j['zfs']['datasets'] ?? []) as $ds): ?>
-                                <div class="rb-row">
-                                    <input type="text" class="zfs-dataset" value="<?= htmlspecialchars($ds) ?>" placeholder="cache/appdata" style="flex:1;" readonly>
+                                <div class="rb-row" style="flex-wrap:nowrap;">
+                                    <input type="text" class="zfs-dataset" value="<?= htmlspecialchars($ds) ?>" placeholder="cache/appdata" style="flex:1;min-width:0;opacity:.7;" readonly>
                                     <?php if ($j['zfs']['recursive'] ?? true): ?>
-                                    <span class="rb-hint" style="white-space:nowrap;color:var(--accent);">recursive</span>
+                                    <span style="white-space:nowrap;color:var(--accent);font-size:.8em;flex-shrink:0;">recursive</span>
                                     <?php endif; ?>
                                     <button class="rb-btn rb-btn-red rb-btn-sm" onclick="this.parentElement.remove()">X</button>
                                 </div>

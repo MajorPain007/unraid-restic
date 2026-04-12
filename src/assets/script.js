@@ -532,8 +532,9 @@ function rbSyncDsToManual(panel) {
         if (recursive && rbDsHasCheckedParent(picker, cb.value)) return;
         var div = document.createElement('div');
         div.className = 'rb-row';
-        div.innerHTML = '<input type="text" class="zfs-dataset" value="' + cb.value + '" readonly style="flex:1;opacity:.7;">'
-            + (recursive ? '<span class="rb-hint" style="white-space:nowrap;color:var(--accent);">recursive</span>' : '')
+        div.style.flexWrap = 'nowrap';
+        div.innerHTML = '<input type="text" class="zfs-dataset" value="' + cb.value + '" readonly style="flex:1;min-width:0;opacity:.7;">'
+            + (recursive ? '<span style="white-space:nowrap;color:var(--accent);font-size:.8em;flex-shrink:0;">recursive</span>' : '')
             + '<button class="rb-btn rb-btn-red rb-btn-sm" onclick="rbRemoveDs(this,\'' + cb.value + '\')">X</button>';
         manual.appendChild(div);
     });
