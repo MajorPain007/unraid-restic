@@ -10,9 +10,23 @@
 set -e
 
 PLUGIN="restic-backup"
-VERSION="${1:-$(date '+%Y.%m.%d')}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Auto-increment: find highest existing .NN for today and add 1
+_today=$(date '+%Y.%m.%d')
+if [ -z "$1" ]; then
+    _max=0
+    for _f in "${ROOT_DIR}"/archive/${PLUGIN}-${_today}.*.txz; do
+        [ -f "$_f" ] || continue
+        _n=$(basename "$_f" | sed -E "s/${PLUGIN}-${_today}\\.([0-9]+)-.*/\1/")
+        _n=$((10#$_n))
+        [ "$_n" -gt "$_max" ] && _max=$_n
+    done
+    VERSION="${_today}.$(printf '%02d' $((_max + 1)))"
+else
+    VERSION="$1"
+fi
 STAGE="/tmp/${PLUGIN}_build/staging"
 ARCHIVE_DIR="${ROOT_DIR}/archive"
 
