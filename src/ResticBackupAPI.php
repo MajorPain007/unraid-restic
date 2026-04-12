@@ -521,24 +521,64 @@ switch ($action) {
         $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
         $logfile = RESTIC_LOG_DIR . '/restic-restore-' . date('Ymd-His') . '.log';
 
+        // Sanitise include paths
+        $clean_paths = [];
+        foreach ($inc_paths as $ip) {
+            $ip = rtrim(str_replace("\0", '', $ip), '/');
+            if ($ip && $ip[0] === '/') $clean_paths[] = $ip;
+        }
+        if (empty($clean_paths)) $clean_paths = ['/'];
+        $inc_paths = $clean_paths;
+
         $include_flags = '';
         foreach ($inc_paths as $ip) {
-            $ip = str_replace("\0", '', $ip);
-            if ($ip) $include_flags .= ' --include ' . escapeshellarg($ip);
+            $include_flags .= ' --include ' . escapeshellarg($ip);
         }
 
-        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+        // Find the common parent of all included paths.
+        // If it is deeper than '/', use a staging dir so that the restored item
+        // lands directly in $dest/<basename> instead of $dest/full/snapshot/path/<basename>.
+        $parents = array_map('dirname', $inc_paths);
+        $common_parent = $parents[0];
+        foreach ($parents as $p) {
+            while ($common_parent !== '/'
+                   && $p !== $common_parent
+                   && strpos($p . '/', $common_parent . '/') !== 0) {
+                $common_parent = dirname($common_parent);
+            }
+        }
+        $use_staging = ($common_parent !== '/' && $common_parent !== '' && $common_parent !== '.');
+
+        $restic_cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '')
              . " restore " . escapeshellarg($snapshot_id)
-             . $include_flags
-             . " --target " . escapeshellarg($dest)
-             . " >> " . escapeshellarg($logfile) . " 2>&1";
+             . $include_flags;
 
-        exec("nohup bash -c " . escapeshellarg($cmd) . " &");
+        if ($use_staging) {
+            // Restore to temp dir, then move each selected item into $dest directly.
+            $staging = '/tmp/restic-restore-' . bin2hex(random_bytes(4));
+            $restic_cmd .= ' --target ' . escapeshellarg($staging);
+            $move_parts = ['mkdir -p ' . escapeshellarg($dest)];
+            foreach ($inc_paths as $ip) {
+                $move_parts[] = 'mv ' . escapeshellarg($staging . $ip)
+                              . ' ' . escapeshellarg(rtrim($dest, '/') . '/' . basename($ip));
+            }
+            $bash_script = '( ' . $restic_cmd
+                . ' && { ' . implode(' && ', $move_parts) . '; }'
+                . '; rm -rf ' . escapeshellarg($staging)
+                . ' ) >> ' . escapeshellarg($logfile) . ' 2>&1';
+            $display_dest = rtrim($dest, '/') . '/' . basename($inc_paths[0]);
+        } else {
+            $restic_cmd .= ' --target ' . escapeshellarg($dest);
+            $bash_script = $restic_cmd . ' >> ' . escapeshellarg($logfile) . ' 2>&1';
+            $display_dest = $dest;
+        }
+
+        exec('nohup bash -c ' . escapeshellarg($bash_script) . ' &');
 
         echo json_encode([
             'status'  => 'started',
-            'message' => "Restore started → {$dest}  (log: {$logfile})",
+            'message' => "Restore started \u{2192} {$display_dest}  (log: {$logfile})",
             'logfile' => $logfile,
         ]);
         break;
