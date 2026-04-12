@@ -146,6 +146,7 @@ function rbJobPanelHtml(id, idx) {
     + '<div class="rb-section"><div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>ZFS Snapshots</span><span class="arr">&#9660;</span></div>'
     + '<div class="rb-section-body hidden"><p style="color:var(--text-muted);margin:0 0 10px;">Create ZFS snapshots before backup for data consistency.</p>'
     + '<div class="rb-row"><label>Enable Snapshots:</label><select class="zfs-enabled"><option value="0" selected>Disabled</option><option value="1">Enabled</option></select></div>'
+    + '<div class="rb-row"><label>Recursive:</label><select class="zfs-recursive" onchange="rbSyncDsToManual(this.closest(\'.rb-job-panel\'))"><option value="1" selected>Yes — snapshot parent + all children</option><option value="0">No — only selected datasets</option></select></div>'
     + '<div class="rb-row"><label>Snapshot Prefix:</label><input type="text" class="zfs-prefix" value="restic-backup" style="max-width:200px;"></div>'
     + '<div style="margin-top:8px;"><label style="font-weight:bold;display:block;margin-bottom:6px;">Datasets:</label>'
     + '<button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbLoadDatasets(this)" style="margin-bottom:8px;">Load Available Datasets</button>'
@@ -490,11 +491,16 @@ function rbLoadDatasets(btn) {
     });
 }
 
+function rbDsIsRecursive(panel) {
+    var sel = panel.querySelector('.zfs-recursive');
+    return !sel || sel.value === '1';
+}
+
 function rbDsToggle(cb) {
     var picker = cb.closest('.zfs-ds-picker');
     var panel  = cb.closest('.rb-job-panel') || cb.closest('.rb-section-body');
     var val    = cb.value;
-    // Auto-select all children when parent is checked; deselect when unchecked
+    // Always visually check/uncheck children (optical feedback)
     picker.querySelectorAll('.ds-cb').forEach(function(other) {
         if (other !== cb && other.value.indexOf(val + '/') === 0) {
             other.checked = cb.checked;
@@ -503,15 +509,30 @@ function rbDsToggle(cb) {
     rbSyncDsToManual(panel);
 }
 
+// Returns true if any checked ancestor of val exists in picker
+function rbDsHasCheckedParent(picker, val) {
+    var parts = val.split('/');
+    for (var i = 1; i < parts.length; i++) {
+        var ancestor = parts.slice(0, i).join('/');
+        var acb = picker.querySelector('.ds-cb[value="' + CSS.escape(ancestor) + '"]');
+        if (acb && acb.checked) return true;
+    }
+    return false;
+}
+
 function rbSyncDsToManual(panel) {
-    var picker = panel.querySelector('.zfs-ds-picker');
-    var manual = panel.querySelector('.zfs-ds-manual');
+    var picker    = panel.querySelector('.zfs-ds-picker');
+    var manual    = panel.querySelector('.zfs-ds-manual');
+    var recursive = rbDsIsRecursive(panel);
     if (!picker) return;
     manual.innerHTML = '';
     picker.querySelectorAll('.ds-cb:checked').forEach(function(cb) {
+        // When recursive: only save the parent — skip children that have a checked ancestor
+        if (recursive && rbDsHasCheckedParent(picker, cb.value)) return;
         var div = document.createElement('div');
         div.className = 'rb-row';
         div.innerHTML = '<input type="text" class="zfs-dataset" value="' + cb.value + '" readonly style="flex:1;opacity:.7;">'
+            + (recursive ? '<span class="rb-hint" style="white-space:nowrap;">-r</span>' : '')
             + '<button class="rb-btn rb-btn-red rb-btn-sm" onclick="rbRemoveDs(this,\'' + cb.value + '\')">X</button>';
         manual.appendChild(div);
     });
@@ -556,7 +577,8 @@ function rbCollect() {
             sources: [],
             backup_boot: !!(panel.querySelector('.job-backup-boot') || {}).checked,
             zfs: {
-                enabled: panel.querySelector('.zfs-enabled').value === '1',
+                enabled:   panel.querySelector('.zfs-enabled').value === '1',
+                recursive: rbDsIsRecursive(panel),
                 snapshot_prefix: panel.querySelector('.zfs-prefix').value.trim() || 'restic-backup',
                 datasets: []
             },

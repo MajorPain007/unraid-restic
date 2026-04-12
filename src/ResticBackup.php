@@ -279,6 +279,13 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                             <select class="zfs-enabled"><option value="0" <?= !($j['zfs']['enabled'] ?? false) ? 'selected' : '' ?>>Disabled</option><option value="1" <?= ($j['zfs']['enabled'] ?? false) ? 'selected' : '' ?>>Enabled</option></select>
                         </div>
                         <div class="rb-row">
+                            <label>Recursive:</label>
+                            <select class="zfs-recursive" onchange="rbSyncDsToManual(this.closest('.rb-job-panel'))">
+                                <option value="1" <?= ($j['zfs']['recursive'] ?? true) ? 'selected' : '' ?>>Yes — snapshot parent + all children</option>
+                                <option value="0" <?= !($j['zfs']['recursive'] ?? true) ? 'selected' : '' ?>>No — only selected datasets</option>
+                            </select>
+                        </div>
+                        <div class="rb-row">
                             <label>Snapshot Prefix:</label>
                             <input type="text" class="zfs-prefix" value="<?= htmlspecialchars($j['zfs']['snapshot_prefix'] ?? 'restic-backup') ?>" placeholder="restic-backup" style="max-width:200px;">
                         </div>
