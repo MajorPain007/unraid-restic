@@ -13,20 +13,26 @@ $jobs = $config['jobs'] ?? [];
 <link type="text/css" rel="stylesheet" href="<?autov('/webGui/styles/jquery.ui.css')?>">
 <style>
 :root {
-  --accent: #58a6ff; --accent-hover: #388bfd;
+  /* Unraid orange for primary actions */
+  --accent: #f08c00; --accent-hover: #d97c00;
   --green: #56d364; --red: #f85149; --yellow: #e3b341;
-  --bg-card: #1e2329;       /* card/section background */
-  --bg-secondary: #161b22;  /* table headers, inputs */
-  --bg-hover: #21262d;      /* hover, table row separators */
-  --bg-log: #0d1117;        /* log viewer */
-  --border: #3a4049;        /* section/card borders */
-  --border-inner: #30363d;  /* input borders */
-  --border-row: #21262d;    /* table row separators */
+  /* ZFS-plugin dark theme */
+  --bg-card: #1e2329;
+  --bg-secondary: #161b22;
+  --bg-hover: #21262d;
+  --bg-log: #0d1117;
+  --border: #3a4049;
+  --border-inner: #30363d;
+  --border-row: #21262d;
   --text: #c9d1d9;
   --text-muted: #8b949e;
   --text-label: #9ba5b5;
 }
-.rb-wrap { max-width: 1100px; }
+.rb-wrap { width: 100%; }
+/* Two-column grid (matches ZFS plugin layout) */
+.rb-grid { display: grid; grid-template-columns: minmax(0,58fr) minmax(0,42fr); gap: 0 18px; align-items: start; }
+@media (max-width: 1100px) { .rb-grid { grid-template-columns: 1fr; } }
+.rb-col { min-width: 0; }
 .rb-section { margin-bottom: 12px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .rb-section-hdr { background: var(--bg-card); padding: 10px 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-weight: 600; font-size: 13px; user-select: none; color: var(--text); }
 .rb-section-hdr:hover { background: var(--bg-hover); }
@@ -55,10 +61,10 @@ $jobs = $config['jobs'] ?? [];
 
 /* Buttons */
 .rb-btn { padding: 6px 14px; border: none; border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 600; color: #fff; transition: background .15s; }
-.rb-btn-accent { background: #1f6feb; } .rb-btn-accent:hover { background: #388bfd; }
+.rb-btn-accent { background: var(--accent); } .rb-btn-accent:hover { background: var(--accent-hover); }
 .rb-btn-green  { background: #238636; } .rb-btn-green:hover  { background: #2ea043; }
 .rb-btn-red    { background: #b91c1c; } .rb-btn-red:hover    { background: #f85149; }
-.rb-btn-gray   { background: var(--bg-secondary); border:1px solid #444d56; color: var(--text); } .rb-btn-gray:hover { background: var(--bg-hover); }
+.rb-btn-gray   { background: #21262d; border:1px solid #444d56; color: #c9d1d9; } .rb-btn-gray:hover { background: #30363d; }
 .rb-btn-sm { padding: 2px 9px; font-size: 11px; }
 .rb-btn:disabled { opacity: .5; cursor: default; }
 
@@ -125,72 +131,9 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
 
 <div class="rb-wrap">
 
-<!-- ================================================================ -->
-<!-- STATUS & CONTROL -->
-<!-- ================================================================ -->
-<div class="rb-section">
-    <div class="rb-section-hdr" onclick="rbToggle(this)">
-        <span>Status &amp; Control</span><span class="arr">&#9660;</span>
-    </div>
-    <div class="rb-section-body">
-        <div class="rb-row">
-            <label>Status:</label>
-            <span id="rb-status" class="rb-badge <?= $running ? 'rb-badge-run' : 'rb-badge-idle' ?>"><?= $running ? 'RUNNING' : 'IDLE' ?></span>
-        </div>
-        <div class="rb-row" style="margin-top:10px;gap:6px;">
-            <button id="btn-start" class="rb-btn rb-btn-green" onclick="rbStartBackup()" <?= $running ? 'disabled' : '' ?>>Start Backup</button>
-            <button id="btn-stop" class="rb-btn rb-btn-red" onclick="rbStopBackup()" <?= !$running ? 'disabled' : '' ?>>Stop</button>
-            <select id="rb-job-select" style="padding:5px;">
-                <option value="">All Jobs</option>
-                <?php foreach ($jobs as $j): ?>
-                <option value="<?= htmlspecialchars($j['id']) ?>"><?= htmlspecialchars($j['name'] ?: 'Unnamed') ?></option>
-                <?php endforeach; ?>
-            </select>
-            <button class="rb-btn rb-btn-gray" onclick="rbRefreshLog()">Refresh Log</button>
-        </div>
-        <div style="margin-top:10px;">
-            <div id="rb-log">Click "Refresh Log" or start a backup.</div>
-        </div>
-    </div>
-</div>
-
-<!-- ================================================================ -->
-<!-- GENERAL SETTINGS -->
-<!-- ================================================================ -->
-<div class="rb-section">
-    <div class="rb-section-hdr closed" onclick="rbToggle(this)">
-        <span>General Settings</span><span class="arr">&#9660;</span>
-    </div>
-    <div class="rb-section-body hidden">
-        <div class="rb-row">
-            <label>Password Mode:</label>
-            <select id="cfg-pw-mode" onchange="rbTogglePw()">
-                <option value="file" <?= ($config['general']['password_mode'] ?? '') === 'file' ? 'selected' : '' ?>>Password File</option>
-                <option value="inline" <?= ($config['general']['password_mode'] ?? '') === 'inline' ? 'selected' : '' ?>>Inline Password</option>
-            </select>
-        </div>
-        <div class="rb-row" id="row-pw-file">
-            <label>Password File:</label>
-            <input type="text" id="cfg-pw-file" value="<?= htmlspecialchars($config['general']['password_file'] ?? '') ?>" placeholder="/mnt/user/appdata/restic/password.txt" data-picktree="file">
-        </div>
-        <div class="rb-row" id="row-pw-inline" style="display:none;">
-            <label>Password:</label>
-            <input type="text" id="cfg-pw-inline" value="<?= htmlspecialchars($config['general']['password_inline'] ?? '') ?>" placeholder="Repository password">
-        </div>
-        <div class="rb-row">
-            <label>Hostname:</label>
-            <input type="text" id="cfg-hostname" value="<?= htmlspecialchars($config['general']['hostname'] ?? '') ?>" placeholder="e.g. my-unraid">
-            <span class="rb-hint">Used as --host in restic. Leave empty for system hostname.</span>
-        </div>
-        <div class="rb-row">
-            <label>Notifications:</label>
-            <select id="cfg-notify">
-                <option value="1" <?= ($config['general']['notifications'] ?? true) ? 'selected' : '' ?>>Enabled</option>
-                <option value="0" <?= !($config['general']['notifications'] ?? true) ? 'selected' : '' ?>>Disabled</option>
-            </select>
-        </div>
-    </div>
-</div>
+<div class="rb-grid">
+<!-- ════ LEFT COLUMN: Jobs ════ -->
+<div class="rb-col">
 
 <!-- ================================================================ -->
 <!-- BACKUP JOBS -->
@@ -435,6 +378,78 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
     </div>
 </div>
 
+</div><!-- /rb-col left -->
+
+<!-- ════ RIGHT COLUMN: Status, Settings, Browse ════ -->
+<div class="rb-col">
+
+<!-- ================================================================ -->
+<!-- STATUS & CONTROL -->
+<!-- ================================================================ -->
+<div class="rb-section">
+    <div class="rb-section-hdr" onclick="rbToggle(this)">
+        <span>Status &amp; Control</span><span class="arr">&#9660;</span>
+    </div>
+    <div class="rb-section-body">
+        <div class="rb-row">
+            <label>Status:</label>
+            <span id="rb-status" class="rb-badge <?= $running ? 'rb-badge-run' : 'rb-badge-idle' ?>"><?= $running ? 'RUNNING' : 'IDLE' ?></span>
+        </div>
+        <div class="rb-row" style="margin-top:8px;gap:6px;flex-wrap:wrap;">
+            <button id="btn-start" class="rb-btn rb-btn-accent" onclick="rbStartBackup()" <?= $running ? 'disabled' : '' ?>>&#9654; Start Backup</button>
+            <button id="btn-stop" class="rb-btn rb-btn-red" onclick="rbStopBackup()" <?= !$running ? 'disabled' : '' ?>>&#9632; Stop</button>
+            <select id="rb-job-select" style="padding:4px 8px;font-size:13px;background:var(--bg-secondary);color:var(--text);border:1px solid var(--border-inner);border-radius:4px;">
+                <option value="">All Jobs</option>
+                <?php foreach ($jobs as $j): ?>
+                <option value="<?= htmlspecialchars($j['id']) ?>"><?= htmlspecialchars($j['name'] ?: 'Unnamed') ?></option>
+                <?php endforeach; ?>
+            </select>
+            <button class="rb-btn rb-btn-gray" onclick="rbRefreshLog()">Refresh Log</button>
+        </div>
+        <div style="margin-top:10px;">
+            <div id="rb-log">Click "Refresh Log" or start a backup.</div>
+        </div>
+    </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- GENERAL SETTINGS -->
+<!-- ================================================================ -->
+<div class="rb-section">
+    <div class="rb-section-hdr closed" onclick="rbToggle(this)">
+        <span>General Settings</span><span class="arr">&#9660;</span>
+    </div>
+    <div class="rb-section-body hidden">
+        <div class="rb-row">
+            <label>Password Mode:</label>
+            <select id="cfg-pw-mode" onchange="rbTogglePw()">
+                <option value="file" <?= ($config['general']['password_mode'] ?? '') === 'file' ? 'selected' : '' ?>>Password File</option>
+                <option value="inline" <?= ($config['general']['password_mode'] ?? '') === 'inline' ? 'selected' : '' ?>>Inline Password</option>
+            </select>
+        </div>
+        <div class="rb-row" id="row-pw-file">
+            <label>Password File:</label>
+            <input type="text" id="cfg-pw-file" value="<?= htmlspecialchars($config['general']['password_file'] ?? '') ?>" placeholder="/mnt/user/appdata/restic/password.txt" data-picktree="file">
+        </div>
+        <div class="rb-row" id="row-pw-inline" style="display:none;">
+            <label>Password:</label>
+            <input type="text" id="cfg-pw-inline" value="<?= htmlspecialchars($config['general']['password_inline'] ?? '') ?>" placeholder="Repository password">
+        </div>
+        <div class="rb-row">
+            <label>Hostname:</label>
+            <input type="text" id="cfg-hostname" value="<?= htmlspecialchars($config['general']['hostname'] ?? '') ?>" placeholder="e.g. my-unraid">
+            <span class="rb-hint">Leave empty for system hostname.</span>
+        </div>
+        <div class="rb-row">
+            <label>Notifications:</label>
+            <select id="cfg-notify">
+                <option value="1" <?= ($config['general']['notifications'] ?? true) ? 'selected' : '' ?>>Enabled</option>
+                <option value="0" <?= !($config['general']['notifications'] ?? true) ? 'selected' : '' ?>>Disabled</option>
+            </select>
+        </div>
+    </div>
+</div>
+
 <!-- ================================================================ -->
 <!-- BROWSE BACKUPS -->
 <!-- ================================================================ -->
@@ -493,10 +508,12 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
 
 <!-- SAVE -->
 <div style="margin:14px 0;display:flex;gap:10px;align-items:center;">
-    <button class="rb-btn rb-btn-accent" onclick="rbSave()" style="padding:8px 28px;font-size:1.05em;">Save Configuration</button>
-    <span id="rb-save-msg" style="display:none;"></span>
+    <button class="rb-btn rb-btn-accent" onclick="rbSave()" style="padding:8px 22px;font-size:13px;">&#10003; Save Configuration</button>
+    <span id="rb-save-msg" style="display:none;font-size:12px;"></span>
 </div>
 
+</div><!-- /rb-col right -->
+</div><!-- /rb-grid -->
 </div><!-- /rb-wrap -->
 
 <script src="<?autov('/plugins/restic-backup/assets/script.js')?>"></script>

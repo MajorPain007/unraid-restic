@@ -415,10 +415,11 @@ switch ($action) {
 
         $env_str = restic_build_env_str($tc['env']);
         $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        // List from root so we get all directory entries; filter to direct children in PHP.
         $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '')
-             . " ls --json " . escapeshellarg($snapshot_id)
-             . " " . escapeshellarg($path) . " 2>&1";
+             . " ls --json " . escapeshellarg($snapshot_id) . " /"
+             . " 2>&1";
 
         $output = [];
         exec($cmd, $output, $ret);
@@ -428,9 +429,11 @@ switch ($action) {
             break;
         }
 
-        // restic ls --json emits one JSON object per line — filter to direct children only
-        $norm = ($path === '/') ? '/' : rtrim($path, '/');
-        $items = [];
+        // restic ls --json emits one JSON object per line — filter to direct children only.
+        // Use string-prefix matching (more robust than dirname for edge cases).
+        $norm   = rtrim($path, '/'); // e.g. "/tmp/restic-backup-root/abc"
+        $prefix = ($norm === '') ? '/' : $norm . '/'; // prefix all children must start with
+        $items  = [];
         foreach ($output as $line) {
             $line = trim($line);
             if ($line === '') continue;
@@ -438,9 +441,11 @@ switch ($action) {
             if (!is_array($obj)) continue;
             $p = rtrim($obj['path'] ?? '', '/');
             if ($p === '' || $p === $norm) continue; // skip empty / self
-            $parent = dirname($p);
-            if ($parent === '' || $parent === '.') $parent = '/';
-            if ($parent !== $norm) continue;          // skip non-direct children
+            // Must start with prefix
+            if (strpos($p, $prefix) !== 0) continue;
+            // No further slash after the prefix → direct child
+            $rest = substr($p, strlen($prefix));
+            if ($rest === '' || strpos($rest, '/') !== false) continue;
             $items[] = $obj;
         }
         // Sort: dirs first, then alphabetical
