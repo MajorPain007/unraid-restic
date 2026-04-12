@@ -531,4 +531,4 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
 </div><!-- /rb-wrap -->
 
 <script src="<?autov('/plugins/restic-backup/assets/script.js')?>"></script>
-<script>rbTogglePw(); rbInitPickTree();</script>
+<script>rbInitPickTree();</script>

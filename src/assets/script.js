@@ -532,7 +532,7 @@ function rbSyncDsToManual(panel) {
         var div = document.createElement('div');
         div.className = 'rb-row';
         div.innerHTML = '<input type="text" class="zfs-dataset" value="' + cb.value + '" readonly style="flex:1;opacity:.7;">'
-            + (recursive ? '<span class="rb-hint" style="white-space:nowrap;">-r</span>' : '')
+            + (recursive ? '<span class="rb-hint" style="white-space:nowrap;color:var(--accent);">recursive</span>' : '')
             + '<button class="rb-btn rb-btn-red rb-btn-sm" onclick="rbRemoveDs(this,\'' + cb.value + '\')">X</button>';
         manual.appendChild(div);
     });
