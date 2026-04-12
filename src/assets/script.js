@@ -914,6 +914,28 @@ function rbLoadSnapshots() {
         if (resp.length === 0) {
             tbody.innerHTML = '<tr><td colspan="5" style="padding:12px;text-align:center;color:var(--text-muted);">No snapshots found</td></tr>';
         } else {
+            // restic returns snapshots oldest-first; latest = last entry
+            var latest = resp[resp.length - 1];
+
+            // Pinned "latest" row
+            (function(snap) {
+                var d = new Date(snap.time);
+                var date = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0')
+                         + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+                var tags = (snap.tags || []).join(', ') || '-';
+                var paths = snap.paths || [];
+                var tr = document.createElement('tr');
+                tr.style.background = 'rgba(240,140,0,.07)';
+                tr.innerHTML = '<td style="font-family:monospace;"><span style="color:var(--accent);font-size:.78em;font-weight:700;margin-right:4px;">LATEST</span>' + escHtml(snap.short_id) + '</td>'
+                    + '<td>' + escHtml(date) + '</td>'
+                    + '<td>' + escHtml(snap.hostname || '-') + '</td>'
+                    + '<td>' + escHtml(tags) + '</td>'
+                    + '<td><button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbOpenSnapBrowser('
+                    + escAttr(JSON.stringify(snap.id)) + ',' + escAttr(JSON.stringify(snap.short_id)) + ',' + escAttr(JSON.stringify(paths))
+                    + ')">Browse</button></td>';
+                tbody.appendChild(tr);
+            })(latest);
+
             resp.forEach(function(snap) {
                 var d = new Date(snap.time);
                 var date = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0')

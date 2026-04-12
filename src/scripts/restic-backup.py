@@ -205,16 +205,28 @@ def create_zfs_snapshots(zfs_conf):
     snap_name = f"{prefix}-{datetime.datetime.now():%Y%m%d-%H%M%S}"
     created = []
 
-    for ds in datasets:
-        ds = ds.strip()
-        if not ds:
+    for parent_ds in datasets:
+        parent_ds = parent_ds.strip()
+        if not parent_ds:
             continue
-        result = run_cmd(["zfs", "snapshot", f"{ds}@{snap_name}"], check=False)
-        if result is True:
-            created.append((ds, snap_name))
-            logger.info(f"Snapshot: {ds}@{snap_name}")
-        else:
-            logger.warn(f"Snapshot failed {ds}: {result}")
+        # Always recursive so newly created child datasets are included automatically
+        result = run_cmd(["zfs", "snapshot", "-r", f"{parent_ds}@{snap_name}"], check=False)
+        if result is not True:
+            logger.warn(f"Snapshot failed {parent_ds}: {result}")
+            continue
+        logger.info(f"Snapshot (recursive): {parent_ds}@{snap_name}")
+        # Enumerate all datasets under parent so mount_zfs_snapshots can mount each one
+        try:
+            all_ds = subprocess.check_output(
+                ["zfs", "list", "-H", "-r", "-o", "name", parent_ds], text=True
+            ).splitlines()
+        except subprocess.CalledProcessError as e:
+            logger.warn(f"Cannot enumerate datasets under {parent_ds}: {e}")
+            all_ds = [parent_ds]
+        for ds in all_ds:
+            ds = ds.strip()
+            if ds:
+                created.append((ds, snap_name))
 
     return created
 
