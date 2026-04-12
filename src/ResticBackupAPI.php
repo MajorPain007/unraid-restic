@@ -425,39 +425,47 @@ switch ($action) {
         $cache_file = "/tmp/restic-ls-{$safe_id}.json";
         $cache_ttl  = 300; // seconds
 
-        $raw_output = null;
-        if (file_exists($cache_file) && (time() - filemtime($cache_file)) < $cache_ttl) {
-            $raw_output = file_get_contents($cache_file);
-        }
-
-        if ($raw_output === null) {
-            // Run restic ls without a path argument to get the full listing
+        // If no valid cache, stream restic output directly to a temp file.
+        // Using shell redirection avoids loading the full listing into PHP memory
+        // (large snapshots can exhaust the 256 MB PHP memory limit).
+        if (!file_exists($cache_file) || (time() - filemtime($cache_file)) >= $cache_ttl) {
+            $tmp_file = $cache_file . '.tmp';
+            $err_file = $cache_file . '.err';
             $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
                  . ($sfx ? " $sfx" : '')
                  . " ls --json " . escapeshellarg($snapshot_id)
-                 . " 2>&1";
-            $output = [];
-            exec($cmd, $output, $ret);
+                 . " > " . escapeshellarg($tmp_file)
+                 . " 2> " . escapeshellarg($err_file);
+            $unused = [];
+            exec($cmd, $unused, $ret);
             if ($ret !== 0) {
-                echo json_encode(['status' => 'error', 'message' => implode("\n", $output)]);
+                $err = trim(@file_get_contents($err_file) ?: 'restic ls failed (exit ' . $ret . ')');
+                @unlink($tmp_file);
+                @unlink($err_file);
+                echo json_encode(['status' => 'error', 'message' => $err]);
                 break;
             }
-            $raw_output = implode("\n", $output);
-            @file_put_contents($cache_file, $raw_output);
+            @unlink($err_file);
+            rename($tmp_file, $cache_file);
         }
 
-        // Filter to direct children of $path.
+        // Filter to direct children of $path — read line by line, never load full file.
         // $norm   = '' (root) or '/some/path' (subdir, no trailing slash)
         // $prefix = '/' (root) or '/some/path/' (subdir)
         $norm   = ($path === '/') ? '' : $path;
         $prefix = ($norm === '') ? '/' : $norm . '/';
         $items  = [];
-        foreach (explode("\n", $raw_output) as $line) {
+        $fh = @fopen($cache_file, 'r');
+        if (!$fh) {
+            echo json_encode(['status' => 'error', 'message' => 'Cannot read snapshot listing cache']);
+            break;
+        }
+        while (($line = fgets($fh)) !== false) {
             $line = trim($line);
             if ($line === '') continue;
             $obj = @json_decode($line, true);
-            if (!is_array($obj) || !isset($obj['path'])) continue; // skip snapshot header + blanks
-            $p = rtrim($obj['path'], '/'); // normalise dir paths (restic sometimes adds trailing slash)
+            if (!is_array($obj) || !isset($obj['path'])) continue; // skip snapshot header line
+            $p = rtrim($obj['path'], '/'); // normalise dir paths (restic may add trailing slash)
             if ($p === '' || $p === $norm) continue; // skip root or self
             if (strpos($p, $prefix) !== 0) continue; // not under this dir
             $rest = substr($p, strlen($prefix));
@@ -466,6 +474,7 @@ switch ($action) {
             if (!isset($obj['name']) || $obj['name'] === '') $obj['name'] = basename($p);
             $items[] = $obj;
         }
+        fclose($fh);
 
         // Sort: dirs first, then alphabetical by name
         usort($items, function($a, $b) {
