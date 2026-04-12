@@ -30,7 +30,7 @@ $jobs = $config['jobs'] ?? [];
 }
 .rb-wrap { width: 100%; }
 /* Two-column grid (matches ZFS plugin layout) */
-.rb-grid { display: grid; grid-template-columns: minmax(0,58fr) minmax(0,42fr); gap: 0 18px; align-items: start; }
+.rb-grid { display: grid; grid-template-columns: minmax(0,52fr) minmax(0,48fr); gap: 0 18px; align-items: start; }
 @media (max-width: 1100px) { .rb-grid { grid-template-columns: 1fr; } }
 .rb-col { min-width: 0; }
 .rb-section { margin-bottom: 12px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
@@ -60,11 +60,11 @@ $jobs = $config['jobs'] ?? [];
 .rb-hint { color: var(--text-muted); font-size: 11px; width: 100%; padding-left: 180px; }
 
 /* Buttons */
-.rb-btn { padding: 6px 14px; border: none; border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 600; color: #fff; transition: background .15s; }
-.rb-btn-accent { background: var(--accent); } .rb-btn-accent:hover { background: var(--accent-hover); }
-.rb-btn-green  { background: #238636; } .rb-btn-green:hover  { background: #2ea043; }
-.rb-btn-red    { background: #b91c1c; } .rb-btn-red:hover    { background: #f85149; }
-.rb-btn-gray   { background: #21262d; border:1px solid #444d56; color: #c9d1d9; } .rb-btn-gray:hover { background: #30363d; }
+.rb-btn { padding: 6px 14px; border: none; border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 600; color: #fff !important; transition: background .15s; }
+.rb-btn-accent { background: #f08c00 !important; } .rb-btn-accent:hover { background: #d97c00 !important; }
+.rb-btn-green  { background: #238636 !important; } .rb-btn-green:hover  { background: #2ea043 !important; }
+.rb-btn-red    { background: #b91c1c !important; } .rb-btn-red:hover    { background: #f85149 !important; }
+.rb-btn-gray   { background: #21262d !important; border:1px solid #444d56; color: #c9d1d9 !important; } .rb-btn-gray:hover { background: #30363d !important; }
 .rb-btn-sm { padding: 2px 9px; font-size: 11px; }
 .rb-btn:disabled { opacity: .5; cursor: default; }
 

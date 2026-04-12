@@ -924,10 +924,9 @@ function rbOpenSnapBrowser(snapshotId, shortId, paths) {
     rbSnapCtx.snapshotId  = snapshotId;
     rbSnapCtx.shortId     = shortId;
     rbSnapCtx.pathStack   = [];
-    // Start at the actual backup root (from snap.paths), not '/'
-    var startPath = (paths && paths.length > 0) ? paths[0] : '/';
-    rbSnapCtx.basePath    = startPath;
-    rbSnapCtx.currentPath = startPath;
+    // Restic stores content paths from '/' regardless of the host backup dir
+    rbSnapCtx.basePath    = '/';
+    rbSnapCtx.currentPath = '/';
 
     document.getElementById('snap-browser-id').textContent    = shortId;
     document.getElementById('snap-restore-msg').style.display = 'none';
