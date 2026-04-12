@@ -903,7 +903,7 @@ function rbLoadSnapshots() {
                     + '<td>' + escHtml(snap.hostname || '-') + '</td>'
                     + '<td>' + escHtml(tags) + '</td>'
                     + '<td><button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbOpenSnapBrowser('
-                    + JSON.stringify(snap.id) + ',' + JSON.stringify(snap.short_id) + ',' + JSON.stringify(paths)
+                    + escAttr(JSON.stringify(snap.id)) + ',' + escAttr(JSON.stringify(snap.short_id)) + ',' + escAttr(JSON.stringify(paths))
                     + ')">Browse</button></td>';
                 tbody.appendChild(tr);
             });
@@ -939,7 +939,7 @@ function rbOpenSnapBrowser(snapshotId, shortId, paths) {
 function rbSnapBuildCrumbs(path) {
     var base = rbSnapCtx.basePath.replace(/\/$/, '');
     var cur  = path.replace(/\/$/, '') || '/';
-    var html = '<span class="snap-crumb" onclick="rbSnapBrowse(' + JSON.stringify(base) + ')">&#8962; root</span>';
+    var html = '<span class="snap-crumb" onclick="rbSnapBrowse(' + escAttr(JSON.stringify(base)) + ')">&#8962; root</span>';
     if (cur === base) return html;
     var suffix = cur.startsWith(base) ? cur.slice(base.length).replace(/^\//, '') : cur.replace(/^\//, '');
     var parts  = suffix ? suffix.split('/') : [];
@@ -951,7 +951,7 @@ function rbSnapBuildCrumbs(path) {
             html += '<span style="color:var(--text);">' + escHtml(part) + '</span>';
         } else {
             var p = built;
-            html += '<span class="snap-crumb" onclick="rbSnapBrowse(' + JSON.stringify(p) + ')">' + escHtml(part) + '</span>';
+            html += '<span class="snap-crumb" onclick="rbSnapBrowse(' + escAttr(JSON.stringify(p)) + ')">' + escHtml(part) + '</span>';
         }
     });
     return html;
@@ -972,12 +972,12 @@ function rbSnapRenderItems(items, path) {
         var isDir = item.type === 'dir';
         var icon  = isDir ? '&#128193;' : '&#128196;';
         var size  = !isDir ? '<span class="snap-size">' + rbFmtBytes(item.size) + '</span>' : '';
-        var enter = isDir ? '<button class="snap-enter-btn" onclick="rbSnapEnter(' + JSON.stringify(item.path) + ')" title="Open folder">&#8594;</button>' : '';
+        var enter = isDir ? '<button class="snap-enter-btn" onclick="rbSnapEnter(' + escAttr(JSON.stringify(item.path)) + ')" title="Open folder">&#8594;</button>' : '';
         html += '<div class="snap-file-row">'
             + '<input type="checkbox" class="snap-check" data-path="' + escAttr(item.path) + '">'
             + '<span class="snap-file-icon">' + icon + '</span>'
             + '<span class="snap-file-name' + (isDir ? ' snap-dir-name' : '') + '"'
-            + (isDir ? ' onclick="rbSnapEnter(' + JSON.stringify(item.path) + ')"' : '')
+            + (isDir ? ' onclick="rbSnapEnter(' + escAttr(JSON.stringify(item.path)) + ')"' : '')
             + '>' + escHtml(item.name) + '</span>'
             + size + enter
             + '</div>';
