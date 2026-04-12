@@ -67,17 +67,8 @@ def load_config():
     with open(CONFIG_FILE, "r") as f:
         return json.load(f)
 
-def setup_password(config):
+def setup_notifications(config):
     general = config.get("general", {})
-    mode = general.get("password_mode", "file")
-    if mode == "file":
-        pw_file = general.get("password_file", "")
-        if pw_file:
-            os.environ["RESTIC_PASSWORD_FILE"] = pw_file
-    elif mode == "inline":
-        pw = general.get("password_inline", "")
-        if pw:
-            os.environ["RESTIC_PASSWORD"] = pw
     logger.notifications_enabled = general.get("notifications", True)
 
 # ==============================================================================
@@ -143,9 +134,23 @@ def release_lock():
 # TARGET CREDENTIALS
 # ==============================================================================
 
-def build_target_env(target):
-    """Return os.environ copy with credentials injected for the target type."""
+def build_target_env(target, general=None):
+    """Return os.environ copy with credentials + password injected for the target."""
     env = os.environ.copy()
+    if general is None:
+        general = {}
+
+    # Password: prefer target-level, fall back to general (backward compat)
+    pw_mode = target.get("password_mode") or general.get("password_mode", "file")
+    if pw_mode == "file":
+        pw_file = target.get("password_file") or general.get("password_file", "")
+        if pw_file:
+            env["RESTIC_PASSWORD_FILE"] = pw_file
+    elif pw_mode == "inline":
+        pw = target.get("password_inline") or general.get("password_inline", "")
+        if pw:
+            env["RESTIC_PASSWORD"] = pw
+
     t = target.get("type", "local")
     creds = target.get("credentials", {})
     if t == "s3":
@@ -306,13 +311,14 @@ def run_job(config, job):
     logger.info(f"=== Job: {job_name} ===")
     t_job = time.time()
 
+    general = config.get("general", {})
     targets = job.get("targets", [])
     excludes = job.get("excludes", {})
     retention = job.get("retention", {})
     check_conf = job.get("check", {})
     max_retries = job.get("max_retries", 3)
     retry_wait = job.get("retry_wait", 30)
-    hostname = config.get("general", {}).get("hostname", "")
+    hostname = general.get("hostname", "")
     tags = job.get("tags", "")
 
     job_root, snapshots = prepare_job_env(job)
@@ -324,7 +330,7 @@ def run_job(config, job):
             if not target.get("enabled", True):
                 continue
             url = get_target_url(target)
-            target_env = build_target_env(target)
+            target_env = build_target_env(target, general)
             name = target.get("name", url)
             if not url:
                 logger.warn(f"Target has no URL: {name}")
@@ -450,7 +456,7 @@ def do_backup(config, job_id=None):
     if not acquire_lock():
         sys.exit(1)
 
-    setup_password(config)
+    setup_notifications(config)
     os.makedirs(MOUNT_ROOT, exist_ok=True)
 
     total_ok = 0

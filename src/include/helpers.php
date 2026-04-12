@@ -258,13 +258,15 @@ function restic_get_target_config(string $job_id, string $target_id): ?array {
         $url = restic_inject_rest_creds($url, $creds);
     }
 
-    // Build env array
+    // Build env array — password is per-target; fall back to general for old configs
     $env = [];
-    $pw_mode = $general['password_mode'] ?? 'file';
-    if ($pw_mode === 'file' && !empty($general['password_file'])) {
-        $env['RESTIC_PASSWORD_FILE'] = $general['password_file'];
-    } elseif ($pw_mode === 'inline' && !empty($general['password_inline'])) {
-        $env['RESTIC_PASSWORD'] = $general['password_inline'];
+    $pw_mode = $target['password_mode'] ?? $general['password_mode'] ?? 'file';
+    if ($pw_mode === 'file') {
+        $pw_file = $target['password_file'] ?? $general['password_file'] ?? '';
+        if ($pw_file) $env['RESTIC_PASSWORD_FILE'] = $pw_file;
+    } elseif ($pw_mode === 'inline') {
+        $pw_inline = $target['password_inline'] ?? $general['password_inline'] ?? '';
+        if ($pw_inline) $env['RESTIC_PASSWORD'] = $pw_inline;
     }
     if ($type === 's3') {
         if (!empty($creds['aws_access_key_id']))     $env['AWS_ACCESS_KEY_ID']     = $creds['aws_access_key_id'];

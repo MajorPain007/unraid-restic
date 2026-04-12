@@ -175,6 +175,10 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                             $tpfx   = $tpfxMap[$ttype] ?? '';
                             $tfull  = $t['url'] ?? '';
                             $tsuffix = ($tpfx && strncmp($tfull, $tpfx, strlen($tpfx)) === 0) ? substr($tfull, strlen($tpfx)) : $tfull;
+                            // Password: prefer target-level, fall back to general (migration path)
+                            $tpwmode   = $t['password_mode']   ?? ($config['general']['password_mode']   ?? 'file');
+                            $tpwfile   = $t['password_file']   ?? ($config['general']['password_file']   ?? '');
+                            $tpwinline = $t['password_inline'] ?? ($config['general']['password_inline'] ?? '');
                             ?>
                             <div class="rb-card" data-id="<?= htmlspecialchars($t['id'] ?? '') ?>" data-type="<?= htmlspecialchars($ttype) ?>">
                                 <div class="rb-card-hdr">
@@ -229,6 +233,22 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                                 </div>
                                 <div class="target-creds target-creds-rclone"<?= $ttype !== 'rclone' ? ' style="display:none;"' : '' ?>>
                                     <div class="rb-hint" style="padding-left:0;margin-bottom:6px;">Rclone uses its own config (<code>rclone config</code>). No credentials needed here.</div>
+                                </div>
+                                <!-- Repository password (per target) -->
+                                <div class="rb-row">
+                                    <label>Password Mode:</label>
+                                    <select class="target-pw-mode" onchange="rbTargetPwToggle(this)">
+                                        <option value="file" <?= $tpwmode === 'file' ? 'selected' : '' ?>>Password File</option>
+                                        <option value="inline" <?= $tpwmode === 'inline' ? 'selected' : '' ?>>Inline Password</option>
+                                    </select>
+                                </div>
+                                <div class="target-pw-file-row rb-row"<?= $tpwmode !== 'file' ? ' style="display:none;"' : '' ?>>
+                                    <label>Password File:</label>
+                                    <input type="text" class="target-pw-file" value="<?= htmlspecialchars($tpwfile) ?>" placeholder="/boot/config/plugins/restic-backup/password.txt" data-picktree="file" autocomplete="off">
+                                </div>
+                                <div class="target-pw-inline-row rb-row"<?= $tpwmode !== 'inline' ? ' style="display:none;"' : '' ?>>
+                                    <label>Password:</label>
+                                    <input type="password" class="target-pw-inline" value="<?= htmlspecialchars($tpwinline) ?>" placeholder="Repository password" autocomplete="off">
                                 </div>
                                 <div class="rb-row">
                                     <label>Name:</label>
@@ -420,21 +440,6 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
         <span>General Settings</span><span class="arr">&#9660;</span>
     </div>
     <div class="rb-section-body hidden">
-        <div class="rb-row">
-            <label>Password Mode:</label>
-            <select id="cfg-pw-mode" onchange="rbTogglePw()">
-                <option value="file" <?= ($config['general']['password_mode'] ?? '') === 'file' ? 'selected' : '' ?>>Password File</option>
-                <option value="inline" <?= ($config['general']['password_mode'] ?? '') === 'inline' ? 'selected' : '' ?>>Inline Password</option>
-            </select>
-        </div>
-        <div class="rb-row" id="row-pw-file">
-            <label>Password File:</label>
-            <input type="text" id="cfg-pw-file" value="<?= htmlspecialchars($config['general']['password_file'] ?? '') ?>" placeholder="/mnt/user/appdata/restic/password.txt" data-picktree="file">
-        </div>
-        <div class="rb-row" id="row-pw-inline" style="display:none;">
-            <label>Password:</label>
-            <input type="text" id="cfg-pw-inline" value="<?= htmlspecialchars($config['general']['password_inline'] ?? '') ?>" placeholder="Repository password">
-        </div>
         <div class="rb-row">
             <label>Hostname:</label>
             <input type="text" id="cfg-hostname" value="<?= htmlspecialchars($config['general']['hostname'] ?? '') ?>" placeholder="e.g. my-unraid">

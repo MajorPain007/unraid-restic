@@ -67,12 +67,13 @@ function rbToggle(hdr) {
 }
 
 // =============================================================================
-// PASSWORD TOGGLE
+// PASSWORD TOGGLE (per target)
 // =============================================================================
-function rbTogglePw() {
-    var mode = document.getElementById('cfg-pw-mode').value;
-    document.getElementById('row-pw-file').style.display = mode === 'file' ? 'flex' : 'none';
-    document.getElementById('row-pw-inline').style.display = mode === 'inline' ? 'flex' : 'none';
+function rbTargetPwToggle(sel) {
+    var card = sel.closest('.rb-card');
+    var mode = sel.value;
+    card.querySelector('.target-pw-file-row').style.display   = mode === 'file'   ? '' : 'none';
+    card.querySelector('.target-pw-inline-row').style.display = mode === 'inline' ? '' : 'none';
 }
 
 // =============================================================================
@@ -224,6 +225,15 @@ function rbAddTarget(btn) {
         + '<option value="b2">Backblaze B2</option><option value="rest">REST Server</option><option value="rclone">Rclone</option></select></div>'
         + '<div class="rb-row"><label>Repository URL:</label><div class="rb-url-wrap"><span class="rb-url-pfx" style="display:none;"></span><input type="text" class="target-url" value="" placeholder="/mnt/disks/backup/restic" data-picktree="dir"></div></div>'
         + rbCredsHtml
+        + '<div class="rb-row"><label>Password Mode:</label>'
+        + '<select class="target-pw-mode" onchange="rbTargetPwToggle(this)">'
+        + '<option value="file" selected>Password File</option>'
+        + '<option value="inline">Inline Password</option>'
+        + '</select></div>'
+        + '<div class="target-pw-file-row rb-row"><label>Password File:</label>'
+        + '<input type="text" class="target-pw-file" placeholder="/boot/config/plugins/restic-backup/password.txt" data-picktree="file" autocomplete="off"></div>'
+        + '<div class="target-pw-inline-row rb-row" style="display:none;"><label>Password:</label>'
+        + '<input type="password" class="target-pw-inline" placeholder="Repository password" autocomplete="off"></div>'
         + '<div class="rb-row"><label>Name:</label><input type="text" class="target-name" value="" placeholder="e.g. Hetzner Cloud"></div>'
         + '<div class="rb-row"><label>Optional Excludes:</label><select class="target-opt-exc"><option value="0" selected>No</option><option value="1">Yes</option></select></div>'
         + '<div class="rb-row"><label>Enabled:</label><select class="target-enabled"><option value="1" selected>Yes</option><option value="0">No</option></select></div>'
@@ -534,9 +544,6 @@ function rbAddDatasetInput(btn) {
 function rbCollect() {
     var config = {
         general: {
-            password_mode: document.getElementById('cfg-pw-mode').value,
-            password_file: document.getElementById('cfg-pw-file').value.trim(),
-            password_inline: document.getElementById('cfg-pw-inline').value,
             hostname: document.getElementById('cfg-hostname').value.trim(),
             notifications: document.getElementById('cfg-notify').value === '1'
         },
@@ -592,7 +599,10 @@ function rbCollect() {
                 name: card.querySelector('.target-name').value.trim(),
                 use_optional_excludes: card.querySelector('.target-opt-exc').value === '1',
                 enabled: card.querySelector('.target-enabled').value === '1',
-                credentials: rbGetTargetCreds(card)
+                credentials: rbGetTargetCreds(card),
+                password_mode: (card.querySelector('.target-pw-mode') || {value:'file'}).value,
+                password_file: (card.querySelector('.target-pw-file') || {value:''}).value.trim(),
+                password_inline: (card.querySelector('.target-pw-inline') || {value:''}).value.trim()
             });
         });
 
@@ -663,12 +673,6 @@ function rbSave() {
 }
 
 function rbAutoInit(config) {
-    var pw = {
-        password_mode: config.general.password_mode,
-        password_file: config.general.password_file,
-        password_inline: config.general.password_inline
-    };
-
     config.jobs.forEach(function(job) {
         if (!job.enabled) return;
         job.targets.forEach(function(target) {
@@ -676,9 +680,11 @@ function rbAutoInit(config) {
 
             var body = {
                 url: target.url,
-                password_mode: pw.password_mode,
-                password_file: pw.password_file,
-                password_inline: pw.password_inline
+                type: target.type || 'local',
+                credentials: target.credentials || {},
+                password_mode:   target.password_mode   || 'file',
+                password_file:   target.password_file   || '',
+                password_inline: target.password_inline || ''
             };
 
             rbAjax('test', body, function(resp) {
@@ -718,11 +724,11 @@ function rbStopBackup() {
 // =============================================================================
 // INIT / TEST
 // =============================================================================
-function rbGetPwConfig() {
+function rbCardPwBody(card) {
     return {
-        password_mode: document.getElementById('cfg-pw-mode').value,
-        password_file: document.getElementById('cfg-pw-file').value.trim(),
-        password_inline: document.getElementById('cfg-pw-inline').value
+        password_mode:   (card.querySelector('.target-pw-mode')   || {value:'file'}).value,
+        password_file:   (card.querySelector('.target-pw-file')   || {value:''}).value.trim(),
+        password_inline: (card.querySelector('.target-pw-inline') || {value:''}).value.trim()
     };
 }
 
@@ -731,7 +737,7 @@ function rbInitRepo(btn) {
     var url = card.querySelector('.target-url').value.trim();
     if (!url) { rbMsg('Please enter a repository URL first.', 'error'); return; }
     btn.disabled = true; btn.textContent = 'Init...';
-    var body = rbGetPwConfig();
+    var body = rbCardPwBody(card);
     body.url = url;
     body.type = card.getAttribute('data-type') || 'local';
     body.credentials = rbGetTargetCreds(card);
@@ -749,7 +755,7 @@ function rbTestTarget(btn) {
     var url = card.querySelector('.target-url').value.trim();
     if (!url) { rbMsg('Please enter a repository URL first.', 'error'); return; }
     btn.disabled = true; btn.textContent = 'Testing...';
-    var body = rbGetPwConfig();
+    var body = rbCardPwBody(card);
     body.url = url;
     body.type = card.getAttribute('data-type') || 'local';
     body.credentials = rbGetTargetCreds(card);
