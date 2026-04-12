@@ -965,7 +965,7 @@ function rbSnapRenderItems(items, path) {
     }
     var html = '<div class="snap-file-hdr">'
         + '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">'
-        + '<input type="checkbox" id="snap-check-all" onchange="rbSnapToggleAll(this.checked)"> All</label>'
+        + '<input type="checkbox" id="snap-check-all" autocomplete="off" onchange="rbSnapToggleAll(this.checked)"> All</label>'
         + '</div>';
     items.forEach(function(item) {
         var isDir = item.type === 'dir';
@@ -973,7 +973,7 @@ function rbSnapRenderItems(items, path) {
         var size  = !isDir ? '<span class="snap-size">' + rbFmtBytes(item.size) + '</span>' : '';
         var enter = isDir ? '<button class="snap-enter-btn" onclick="rbSnapEnter(' + escAttr(JSON.stringify(item.path)) + ')" title="Open folder">&#8594;</button>' : '';
         html += '<div class="snap-file-row">'
-            + '<input type="checkbox" class="snap-check" data-path="' + escAttr(item.path) + '">'
+            + '<input type="checkbox" class="snap-check" autocomplete="off" data-path="' + escAttr(item.path) + '">'
             + '<span class="snap-file-icon">' + icon + '</span>'
             + '<span class="snap-file-name' + (isDir ? ' snap-dir-name' : '') + '"'
             + (isDir ? ' onclick="rbSnapEnter(' + escAttr(JSON.stringify(item.path)) + ')"' : '')

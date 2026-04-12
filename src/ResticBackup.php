@@ -497,7 +497,7 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
             </div>
             <div class="rb-row" style="margin-top:12px;">
                 <label>Restore to:</label>
-                <input type="text" id="snap-restore-dest" placeholder="/mnt/user/restore" data-picktree="dir" style="flex:1;max-width:360px;">
+                <input type="text" id="snap-restore-dest" placeholder="/mnt/user/restore" data-picktree="dir" autocomplete="off" style="flex:1;max-width:360px;">
                 <button class="rb-btn rb-btn-green" onclick="rbSnapRestore()">&#8595; Restore Selected</button>
             </div>
             <div class="rb-hint">Check items to select them, then click Restore. Folders restore everything inside them.</div>
