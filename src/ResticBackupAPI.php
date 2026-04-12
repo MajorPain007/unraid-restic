@@ -428,14 +428,28 @@ switch ($action) {
             break;
         }
 
-        // restic ls --json emits one JSON object per line
+        // restic ls --json emits one JSON object per line — filter to direct children only
+        $norm = ($path === '/') ? '/' : rtrim($path, '/');
         $items = [];
         foreach ($output as $line) {
             $line = trim($line);
             if ($line === '') continue;
             $obj = @json_decode($line, true);
-            if (is_array($obj)) $items[] = $obj;
+            if (!is_array($obj)) continue;
+            $p = rtrim($obj['path'] ?? '', '/');
+            if ($p === '' || $p === $norm) continue; // skip empty / self
+            $parent = dirname($p);
+            if ($parent === '' || $parent === '.') $parent = '/';
+            if ($parent !== $norm) continue;          // skip non-direct children
+            $items[] = $obj;
         }
+        // Sort: dirs first, then alphabetical
+        usort($items, function($a, $b) {
+            $aD = ($a['type'] ?? '') === 'dir' ? 0 : 1;
+            $bD = ($b['type'] ?? '') === 'dir' ? 0 : 1;
+            if ($aD !== $bD) return $aD - $bD;
+            return strcasecmp($a['name'] ?? '', $b['name'] ?? '');
+        });
         echo json_encode(['status' => 'success', 'items' => $items]);
         break;
 
@@ -446,8 +460,11 @@ switch ($action) {
         $job_id      = $data['job_id']      ?? '';
         $target_id   = $data['target_id']   ?? '';
         $snapshot_id = $data['snapshot_id'] ?? '';
-        $include     = $data['include_path'] ?? '/';
-        $dest        = $data['dest']         ?? '';
+        $dest        = $data['dest']        ?? '';
+
+        // Accept include_paths (array) or legacy include_path (string)
+        $raw_paths = $data['include_paths'] ?? $data['include_path'] ?? ['/'];
+        $inc_paths = is_array($raw_paths) ? $raw_paths : [$raw_paths];
 
         if (!$job_id || !$snapshot_id || !$dest) {
             echo json_encode(['status' => 'error', 'message' => 'Missing required fields']);
@@ -455,8 +472,7 @@ switch ($action) {
         }
 
         // Sanitize paths
-        $include = str_replace("\0", '', $include);
-        $dest    = str_replace("\0", '', $dest);
+        $dest = str_replace("\0", '', $dest);
         if (!$dest || $dest[0] !== '/') {
             echo json_encode(['status' => 'error', 'message' => 'dest must be an absolute path']);
             break;
@@ -472,10 +488,16 @@ switch ($action) {
         $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
         $logfile = RESTIC_LOG_DIR . '/restic-restore-' . date('Ymd-His') . '.log';
 
+        $include_flags = '';
+        foreach ($inc_paths as $ip) {
+            $ip = str_replace("\0", '', $ip);
+            if ($ip) $include_flags .= ' --include ' . escapeshellarg($ip);
+        }
+
         $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '')
              . " restore " . escapeshellarg($snapshot_id)
-             . " --include " . escapeshellarg($include)
+             . $include_flags
              . " --target " . escapeshellarg($dest)
              . " >> " . escapeshellarg($logfile) . " 2>&1";
 

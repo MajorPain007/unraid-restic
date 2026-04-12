@@ -12,67 +12,79 @@ $jobs = $config['jobs'] ?? [];
 
 <link type="text/css" rel="stylesheet" href="<?autov('/webGui/styles/jquery.ui.css')?>">
 <style>
-:root { --accent: #ff8c2f; --accent-hover: #e67a20; --green: #27ae60; --red: #c0392b; --bg-card: #1c1c1c; --bg-input: #111; --border: #333; --text: #ddd; --text-muted: #888; }
+:root {
+  --accent: #58a6ff; --accent-hover: #388bfd;
+  --green: #56d364; --red: #f85149; --yellow: #e3b341;
+  --bg-card: #1e2329; --bg-secondary: #161b22; --bg-hover: #21262d;
+  --bg-input: #0d1117; --border: #30363d;
+  --text: #c9d1d9; --text-muted: #8b949e;
+}
 .rb-wrap { max-width: 1100px; }
 .rb-section { margin-bottom: 12px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-.rb-section-hdr { background: var(--bg-card); padding: 10px 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 1.05em; user-select: none; }
-.rb-section-hdr:hover { background: #252525; }
-.rb-section-hdr .arr { transition: transform .2s; font-size: .8em; }
+.rb-section-hdr { background: var(--bg-card); padding: 10px 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-weight: 600; font-size: 1em; user-select: none; color: var(--text); }
+.rb-section-hdr:hover { background: var(--bg-hover); }
+.rb-section-hdr .arr { transition: transform .2s; font-size: .8em; color: var(--text-muted); }
 .rb-section-hdr.closed .arr { transform: rotate(-90deg); }
 .rb-section-body { padding: 14px 16px; }
 .rb-section-body.hidden { display: none; }
 .rb-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
-.rb-row label { min-width: 170px; font-weight: bold; flex-shrink: 0; }
-.rb-row input[type="text"], .rb-row input[type="number"], .rb-row input[type="password"], .rb-row select { flex: 1; min-width: 180px; max-width: 480px; padding: 5px 8px; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 3px; }
+.rb-row label { min-width: 170px; font-weight: bold; flex-shrink: 0; color: var(--text-muted); font-size: .9em; }
+.rb-row input[type="text"], .rb-row input[type="number"], .rb-row input[type="password"], .rb-row select {
+  flex: 1; min-width: 180px; max-width: 480px; padding: 5px 8px;
+  background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 4px; font-size: .9em;
+}
+.rb-row input:focus, .rb-row select:focus { outline: none; border-color: var(--accent); }
 /* URL split display */
 .rb-url-wrap { display:flex; flex:1; min-width:180px; max-width:480px; }
-.rb-url-pfx { background:var(--bg-card); border:1px solid var(--border); border-right:none; padding:5px 8px; border-radius:3px 0 0 3px; color:var(--text-muted); white-space:nowrap; font-family:monospace; font-size:.9em; display:flex; align-items:center; user-select:none; }
-.rb-url-wrap .target-url { border-radius:0 3px 3px 0; flex:1; min-width:0; max-width:none; }
-/* Snapshot table */
+.rb-url-pfx { background:var(--bg-secondary); border:1px solid var(--border); border-right:none; padding:5px 8px; border-radius:4px 0 0 4px; color:var(--text-muted); white-space:nowrap; font-family:monospace; font-size:.88em; display:flex; align-items:center; user-select:none; }
+.rb-url-wrap .target-url { border-radius:0 4px 4px 0; flex:1; min-width:0; max-width:none; }
+/* Snapshot list table */
 .rb-snap-table { width:100%; border-collapse:collapse; font-size:.88em; margin-top:8px; }
-.rb-snap-table th { text-align:left; padding:5px 8px; border-bottom:1px solid var(--border); color:var(--text-muted); font-size:.8em; text-transform:uppercase; }
+.rb-snap-table th { text-align:left; padding:6px 8px; background:var(--bg-secondary); border-bottom:1px solid var(--border); color:var(--text-muted); font-size:.78em; text-transform:uppercase; letter-spacing:.04em; }
 .rb-snap-table td { padding:5px 8px; border-bottom:1px solid var(--border); vertical-align:middle; }
 .rb-snap-table tr:last-child td { border-bottom:none; }
-.rb-snap-table tr:hover td { background:rgba(255,255,255,.02); }
+.rb-snap-table tr:hover td { background:var(--bg-hover); }
 .rb-hint { color: var(--text-muted); font-size: .82em; width: 100%; padding-left: 180px; }
 
 /* Buttons */
-.rb-btn { padding: 5px 14px; border: none; border-radius: 3px; cursor: pointer; font-size: .88em; color: #fff; }
-.rb-btn-accent { background: var(--accent); } .rb-btn-accent:hover { background: var(--accent-hover); }
-.rb-btn-green { background: var(--green); } .rb-btn-green:hover { background: #219a52; }
-.rb-btn-red { background: var(--red); } .rb-btn-red:hover { background: #a93226; }
-.rb-btn-gray { background: #444; } .rb-btn-gray:hover { background: #555; }
-.rb-btn-sm { padding: 3px 10px; font-size: .82em; }
+.rb-btn { padding: 5px 14px; border: none; border-radius: 4px; cursor: pointer; font-size: .88em; font-weight: 600; color: #fff; transition: background .15s; }
+.rb-btn-accent { background: #1f6feb; } .rb-btn-accent:hover { background: #388bfd; }
+.rb-btn-green  { background: #238636; } .rb-btn-green:hover  { background: #2ea043; }
+.rb-btn-red    { background: #b91c1c; } .rb-btn-red:hover    { background: #f85149; }
+.rb-btn-gray   { background: var(--bg-hover); border:1px solid var(--border); } .rb-btn-gray:hover { background: #2d333b; }
+.rb-btn-sm { padding: 3px 9px; font-size: .8em; }
+.rb-btn:disabled { opacity: .5; cursor: default; }
 
 /* Job Tabs */
 .rb-job-tabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
-.rb-job-tab { padding: 6px 16px; background: #333; border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; cursor: pointer; color: var(--text-muted); font-weight: bold; }
+.rb-job-tab { padding: 6px 16px; background: var(--bg-secondary); border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; cursor: pointer; color: var(--text-muted); font-weight: bold; font-size: .9em; }
 .rb-job-tab.active { background: var(--bg-card); color: var(--accent); border-color: var(--accent); }
-.rb-job-tab:hover { color: #fff; }
+.rb-job-tab:hover { color: var(--text); }
 
 /* Cards */
-.rb-card { background: #1a1a1a; border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin-bottom: 8px; }
+.rb-card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 8px; }
 .rb-card-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.rb-card-title { font-weight: bold; color: var(--accent); }
+.rb-card-title { font-weight: bold; color: var(--accent); font-size: .9em; }
 
 /* Log */
-#rb-log { background: var(--bg-input); color: #0f0; font-family: monospace; font-size: .82em; padding: 10px; height: 350px; overflow-y: auto; white-space: pre-wrap; border: 1px solid var(--border); border-radius: 4px; }
+#rb-log { background: #0d1117; color: #56d364; font-family: 'Consolas','Monaco',monospace; font-size: .82em; padding: 10px; height: 350px; overflow-y: auto; white-space: pre-wrap; border: 1px solid var(--border); border-radius: 4px; line-height: 1.5; }
 
 /* Status */
-.rb-badge { display: inline-block; padding: 2px 10px; border-radius: 3px; font-weight: bold; font-size: .82em; }
-.rb-badge-idle { background: var(--green); color: #fff; }
-.rb-badge-run { background: #f39c12; color: #fff; }
+.rb-badge { display: inline-block; padding: 3px 11px; border-radius: 12px; font-weight: 700; font-size: .78em; text-transform: uppercase; letter-spacing: .04em; }
+.rb-badge-idle { background: #1a4a2744; color: var(--green); border: 1px solid #2a6b3744; }
+.rb-badge-run  { background: #1f6feb44; color: #58a6ff; border: 1px solid #1f6feb88; }
 
 /* Excludes */
-textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family: monospace; font-size: .88em; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); padding: 8px; resize: vertical; border-radius: 3px; }
+textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family: monospace; font-size: .88em; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); padding: 8px; resize: vertical; border-radius: 4px; }
+textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
 
-/* Inline directory browser */
+/* Inline directory browser (source picker) */
 .rb-tree { border: 1px solid var(--border); border-radius: 4px; background: var(--bg-input); max-height: 300px; overflow-y: auto; margin-top: 4px; margin-bottom: 8px; max-width: 500px; }
 .rb-tree-item { padding: 5px 10px; cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--text); font-size: .9em; }
-.rb-tree-item:hover { background: #252525; }
+.rb-tree-item:hover { background: var(--bg-hover); }
 .rb-tree-item.rb-tree-up { color: var(--accent); font-weight: bold; }
-.rb-tree-item .rb-tree-icon { width: 16px; text-align: center; color: var(--accent); }
-.rb-tree-hdr { padding: 6px 10px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); font-size: .85em; }
+.rb-tree-item .rb-tree-icon { width: 16px; text-align: center; color: var(--yellow); }
+.rb-tree-hdr { padding: 6px 10px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: var(--bg-secondary); font-size: .85em; }
 .rb-tree-hdr .rb-tree-path { font-family: monospace; color: var(--accent); }
 
 /* Dataset picker */
@@ -85,6 +97,23 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
 .rb-retention-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
 .rb-retention-grid label { min-width: auto; }
 .rb-retention-grid input { width: 60px; }
+
+/* Snapshot file browser */
+.snap-crumb { color: var(--accent); cursor: pointer; font-size: .88em; }
+.snap-crumb:hover { text-decoration: underline; }
+.snap-crumb-sep { color: var(--text-muted); font-size: .88em; }
+.snap-file-hdr { padding: 5px 10px; background: var(--bg-secondary); border-bottom: 1px solid var(--border); font-size: .78em; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+.snap-file-row { display: flex; align-items: center; gap: 7px; padding: 4px 10px; border-bottom: 1px solid var(--border); font-size: .88em; }
+.snap-file-row:last-child { border-bottom: none; }
+.snap-file-row:hover { background: var(--bg-hover); }
+.snap-file-icon { width: 18px; text-align: center; flex-shrink: 0; }
+.snap-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.snap-dir-name { color: var(--yellow); cursor: pointer; }
+.snap-dir-name:hover { text-decoration: underline; }
+.snap-size { color: var(--text-muted); font-size: .82em; white-space: nowrap; margin-left: auto; padding-right: 4px; }
+.snap-enter-btn { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0 4px; font-size: 1em; flex-shrink: 0; }
+.snap-enter-btn:hover { color: var(--accent-hover); }
+.snap-check { accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
 </style>
 
 <div class="rb-wrap">
@@ -434,23 +463,23 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
 
         <!-- Snapshot browser -->
         <div id="snap-browser" style="display:none;margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
-                <strong>Snapshot:</strong>
-                <span id="snap-browser-id" style="font-family:monospace;color:var(--accent);"></span>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+                <strong style="color:var(--text-muted);font-size:.88em;">SNAPSHOT:</strong>
+                <span id="snap-browser-id" style="font-family:monospace;color:var(--accent);font-size:.9em;"></span>
                 <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbSnapBrowserUp()">&#8593; Up</button>
-                <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="document.getElementById('snap-browser').style.display='none'">Close</button>
+                <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="document.getElementById('snap-browser').style.display='none'">&#10005; Close</button>
             </div>
-            <div id="snap-browser-path" style="font-family:monospace;color:var(--text-muted);font-size:.85em;margin-bottom:6px;">/</div>
-            <div id="snap-browser-list" class="rb-tree" style="max-height:350px;max-width:600px;">
-                <div style="padding:8px;color:var(--text-muted);">Select a snapshot to browse</div>
+            <div id="snap-browser-path" style="margin-bottom:6px;min-height:1.4em;"></div>
+            <div id="snap-browser-list" class="rb-tree" style="max-height:380px;max-width:680px;">
+                <div style="padding:10px;color:var(--text-muted);">Select a snapshot to browse</div>
             </div>
             <div class="rb-row" style="margin-top:12px;">
                 <label>Restore to:</label>
                 <input type="text" id="snap-restore-dest" placeholder="/mnt/user/restore" data-picktree="dir" style="flex:1;max-width:360px;">
-                <button class="rb-btn rb-btn-accent" onclick="rbSnapRestore()">Restore</button>
+                <button class="rb-btn rb-btn-green" onclick="rbSnapRestore()">&#8595; Restore Selected</button>
             </div>
-            <div class="rb-hint">Restores the currently browsed path (and everything below it) from the selected snapshot to the destination folder.</div>
-            <div id="snap-restore-msg" style="display:none;margin-top:6px;font-size:.88em;"></div>
+            <div class="rb-hint">Check items to select them, then click Restore. Folders restore everything inside them.</div>
+            <div id="snap-restore-msg" style="display:none;margin-top:6px;font-size:.88em;padding:6px 10px;border-radius:4px;background:var(--bg-secondary);"></div>
         </div>
     </div>
 </div>

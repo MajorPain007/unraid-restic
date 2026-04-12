@@ -839,7 +839,9 @@ function rbMsg(text, type) {
 // =============================================================================
 // BROWSE BACKUPS
 // =============================================================================
-var rbSnapCtx = { jobId: null, targetId: null, snapshotId: null, shortId: null, currentPath: '/', pathStack: [] };
+var rbSnapCtx = { jobId: null, targetId: null, snapshotId: null, shortId: null,
+                  currentPath: '/', basePath: '/', pathStack: [] };
+var rbSnapCache = {}; // key: snapshotId + ':' + path → items[]
 
 function rbSnapJobChange() {
     var jobId = document.getElementById('snap-job-sel').value;
@@ -893,14 +895,16 @@ function rbLoadSnapshots() {
                 var d = new Date(snap.time);
                 var date = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0')
                          + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
-                var tags  = (snap.tags || []).join(', ') || '-';
+                var tags = (snap.tags || []).join(', ') || '-';
+                var paths = snap.paths || [];
                 var tr = document.createElement('tr');
                 tr.innerHTML = '<td style="font-family:monospace;">' + escHtml(snap.short_id) + '</td>'
                     + '<td>' + escHtml(date) + '</td>'
                     + '<td>' + escHtml(snap.hostname || '-') + '</td>'
                     + '<td>' + escHtml(tags) + '</td>'
-                    + '<td><button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbOpenSnapBrowser(\''
-                    + escAttr(snap.id) + '\',\'' + escAttr(snap.short_id) + '\')">Browse</button></td>';
+                    + '<td><button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbOpenSnapBrowser('
+                    + JSON.stringify(snap.id) + ',' + JSON.stringify(snap.short_id) + ',' + JSON.stringify(paths)
+                    + ')">Browse</button></td>';
                 tbody.appendChild(tr);
             });
         }
@@ -912,22 +916,87 @@ function rbLoadSnapshots() {
     });
 }
 
-function rbOpenSnapBrowser(snapshotId, shortId) {
-    rbSnapCtx.snapshotId = snapshotId;
-    rbSnapCtx.shortId    = shortId;
-    rbSnapCtx.currentPath = '/';
+function rbOpenSnapBrowser(snapshotId, shortId, paths) {
+    // Clear cache for new snapshot
+    if (rbSnapCtx.snapshotId !== snapshotId) {
+        rbSnapCache = {};
+    }
+    rbSnapCtx.snapshotId  = snapshotId;
+    rbSnapCtx.shortId     = shortId;
     rbSnapCtx.pathStack   = [];
-    document.getElementById('snap-browser-id').textContent   = shortId;
+    // Start at the actual backup root (from snap.paths), not '/'
+    var startPath = (paths && paths.length > 0) ? paths[0] : '/';
+    rbSnapCtx.basePath    = startPath;
+    rbSnapCtx.currentPath = startPath;
+
+    document.getElementById('snap-browser-id').textContent    = shortId;
     document.getElementById('snap-restore-msg').style.display = 'none';
-    document.getElementById('snap-browser').style.display    = '';
-    rbSnapBrowse('/');
+    document.getElementById('snap-browser').style.display     = '';
+    rbSnapBrowse(startPath);
+}
+
+// Build breadcrumb HTML relative to basePath
+function rbSnapBuildCrumbs(path) {
+    var base = rbSnapCtx.basePath.replace(/\/$/, '');
+    var cur  = path.replace(/\/$/, '') || '/';
+    var html = '<span class="snap-crumb" onclick="rbSnapBrowse(' + JSON.stringify(base) + ')">&#8962; root</span>';
+    if (cur === base) return html;
+    var suffix = cur.startsWith(base) ? cur.slice(base.length).replace(/^\//, '') : cur.replace(/^\//, '');
+    var parts  = suffix ? suffix.split('/') : [];
+    var built  = base;
+    parts.forEach(function(part, i) {
+        built += '/' + part;
+        html += '<span class="snap-crumb-sep"> / </span>';
+        if (i === parts.length - 1) {
+            html += '<span style="color:var(--text);">' + escHtml(part) + '</span>';
+        } else {
+            var p = built;
+            html += '<span class="snap-crumb" onclick="rbSnapBrowse(' + JSON.stringify(p) + ')">' + escHtml(part) + '</span>';
+        }
+    });
+    return html;
+}
+
+function rbSnapRenderItems(items, path) {
+    document.getElementById('snap-browser-path').innerHTML = rbSnapBuildCrumbs(path);
+    var list = document.getElementById('snap-browser-list');
+    if (items.length === 0) {
+        list.innerHTML = '<div style="padding:10px;color:var(--text-muted);">Empty directory</div>';
+        return;
+    }
+    var html = '<div class="snap-file-hdr">'
+        + '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">'
+        + '<input type="checkbox" id="snap-check-all" onchange="rbSnapToggleAll(this.checked)"> All</label>'
+        + '</div>';
+    items.forEach(function(item) {
+        var isDir = item.type === 'dir';
+        var icon  = isDir ? '&#128193;' : '&#128196;';
+        var size  = !isDir ? '<span class="snap-size">' + rbFmtBytes(item.size) + '</span>' : '';
+        var enter = isDir ? '<button class="snap-enter-btn" onclick="rbSnapEnter(' + JSON.stringify(item.path) + ')" title="Open folder">&#8594;</button>' : '';
+        html += '<div class="snap-file-row">'
+            + '<input type="checkbox" class="snap-check" data-path="' + escAttr(item.path) + '">'
+            + '<span class="snap-file-icon">' + icon + '</span>'
+            + '<span class="snap-file-name' + (isDir ? ' snap-dir-name' : '') + '"'
+            + (isDir ? ' onclick="rbSnapEnter(' + JSON.stringify(item.path) + ')"' : '')
+            + '>' + escHtml(item.name) + '</span>'
+            + size + enter
+            + '</div>';
+    });
+    list.innerHTML = html;
 }
 
 function rbSnapBrowse(path) {
     rbSnapCtx.currentPath = path;
-    document.getElementById('snap-browser-path').textContent = path || '/';
+    var cacheKey = rbSnapCtx.snapshotId + ':' + path;
+    // Serve from cache instantly if available
+    if (rbSnapCache[cacheKey]) {
+        rbSnapRenderItems(rbSnapCache[cacheKey], path);
+        return;
+    }
+
+    document.getElementById('snap-browser-path').innerHTML = rbSnapBuildCrumbs(path);
     var list = document.getElementById('snap-browser-list');
-    list.innerHTML = '<div style="padding:8px;color:var(--text-muted);">Loading...</div>';
+    list.innerHTML = '<div style="padding:10px;color:var(--text-muted);">Loading\u2026</div>';
 
     rbAjax('snapshot_ls', {
         job_id:      rbSnapCtx.jobId,
@@ -936,29 +1005,18 @@ function rbSnapBrowse(path) {
         path:        path || '/'
     }, function(resp) {
         if (resp.status !== 'success') {
-            list.innerHTML = '<div style="padding:8px;color:var(--red);">Error: ' + escHtml(resp.message || '?') + '</div>';
+            list.innerHTML = '<div style="padding:10px;color:var(--red);">Error: ' + escHtml(resp.message || '?') + '</div>';
             return;
         }
         var items = resp.items || [];
-        var html  = '';
-        if (items.length === 0) {
-            html = '<div style="padding:8px;color:var(--text-muted);">Empty directory</div>';
-        }
-        items.forEach(function(item) {
-            var isDir = item.type === 'dir';
-            var icon  = isDir ? '&#128193;' : '&#128196;';
-            var size  = !isDir ? ' <span style="color:var(--text-muted);font-size:.8em;">' + rbFmtBytes(item.size) + '</span>' : '';
-            var click = isDir ? ' onclick="rbSnapClickItem(\'' + escAttr(item.path) + '\')" style="cursor:pointer;"' : '';
-            html += '<div class="rb-tree-item"' + click + ' data-path="' + escAttr(item.path) + '">'
-                + '<span class="rb-tree-icon">' + icon + '</span> ' + escHtml(item.name) + size + '</div>';
-        });
-        list.innerHTML = html;
+        rbSnapCache[cacheKey] = items; // cache for instant Up navigation
+        rbSnapRenderItems(items, path);
     }, function(err) {
-        list.innerHTML = '<div style="padding:8px;color:var(--red);">Error: ' + escHtml(err) + '</div>';
+        list.innerHTML = '<div style="padding:10px;color:var(--red);">Error: ' + escHtml(err) + '</div>';
     });
 }
 
-function rbSnapClickItem(path) {
+function rbSnapEnter(path) {
     rbSnapCtx.pathStack.push(rbSnapCtx.currentPath);
     rbSnapBrowse(path);
 }
@@ -967,35 +1025,45 @@ function rbSnapBrowserUp() {
     if (rbSnapCtx.pathStack.length > 0) {
         rbSnapBrowse(rbSnapCtx.pathStack.pop());
     } else {
-        rbSnapBrowse('/');
+        rbSnapBrowse(rbSnapCtx.basePath);
     }
+}
+
+function rbSnapToggleAll(checked) {
+    var boxes = document.querySelectorAll('#snap-browser-list .snap-check');
+    boxes.forEach(function(b) { b.checked = checked; });
 }
 
 function rbSnapRestore() {
     var dest = document.getElementById('snap-restore-dest').value.trim();
     if (!dest) { rbMsg('Please enter a destination path.', 'error'); return; }
+
+    var checked = Array.from(document.querySelectorAll('#snap-browser-list .snap-check:checked'));
+    if (checked.length === 0) { rbMsg('Please select at least one item to restore.', 'error'); return; }
+    var paths = checked.map(function(c) { return c.getAttribute('data-path'); });
+
     var msg = document.getElementById('snap-restore-msg');
-    msg.textContent = 'Starting restore...';
-    msg.style.color = '#f39c12';
+    msg.textContent = 'Starting restore of ' + paths.length + ' item(s)\u2026';
+    msg.style.color = '#e3b341';
     msg.style.display = 'block';
 
     rbAjax('snapshot_restore', {
-        job_id:       rbSnapCtx.jobId,
-        target_id:    rbSnapCtx.targetId,
-        snapshot_id:  rbSnapCtx.snapshotId,
-        include_path: rbSnapCtx.currentPath,
-        dest:         dest
+        job_id:        rbSnapCtx.jobId,
+        target_id:     rbSnapCtx.targetId,
+        snapshot_id:   rbSnapCtx.snapshotId,
+        include_paths: paths,
+        dest:          dest
     }, function(resp) {
         if (resp.status === 'started') {
             msg.textContent = resp.message || 'Restore started.';
-            msg.style.color = '#27ae60';
+            msg.style.color = 'var(--green)';
         } else {
             msg.textContent = 'Error: ' + (resp.message || JSON.stringify(resp));
-            msg.style.color = '#c0392b';
+            msg.style.color = 'var(--red)';
         }
     }, function(err) {
         msg.textContent = 'Error: ' + err;
-        msg.style.color = '#c0392b';
+        msg.style.color = 'var(--red)';
     });
 }
 
