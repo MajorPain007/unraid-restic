@@ -189,7 +189,12 @@ function rbJobPanelHtml(id, idx) {
 // =============================================================================
 var rbCredsHtml = ''
     + '<div class="target-creds target-creds-sftp" style="display:none;">'
-    +   '<div class="rb-hint" style="padding-left:0;margin-bottom:6px;">SFTP uses SSH key auth — configure in <code>/root/.ssh/config</code>.</div></div>'
+    +   '<div class="rb-hint" style="padding-left:0;margin-bottom:6px;">SFTP uses SSH key auth — configure in <code>/root/.ssh/config</code>.</div>'
+    +   '<div class="rb-row"><label>Accept New Host Key:</label>'
+    +   '<select class="cred-sftp-hostkey">'
+    +   '<option value="1" selected>Yes (StrictHostKeyChecking=accept-new)</option>'
+    +   '<option value="0">No (manual known_hosts required)</option>'
+    +   '</select></div></div>'
     + '<div class="target-creds target-creds-s3" style="display:none;">'
     +   '<div class="rb-row"><label>Access Key ID:</label><input type="text" class="cred-s3-key" value="" placeholder="AKIAIOSFODNN7EXAMPLE"></div>'
     +   '<div class="rb-row"><label>Secret Access Key:</label><input type="password" class="cred-s3-secret" value="" placeholder="wJalrXUtnFEMI/K7MDENG..."></div>'
@@ -215,7 +220,7 @@ function rbAddTarget(btn) {
         + '<div class="rb-row"><label>Type:</label><select class="target-type" onchange="rbTargetTypeChange(this)">'
         + '<option value="local">Local Path</option><option value="sftp">SFTP</option><option value="s3">S3 / Minio</option>'
         + '<option value="b2">Backblaze B2</option><option value="rest">REST Server</option><option value="rclone">Rclone</option></select></div>'
-        + '<div class="rb-row"><label>Repository URL:</label><input type="text" class="target-url" value="" placeholder="/mnt/disks/backup/restic" data-picktree="dir"></div>'
+        + '<div class="rb-row"><label>Repository URL:</label><div class="rb-url-wrap"><span class="rb-url-pfx" style="display:none;"></span><input type="text" class="target-url" value="" placeholder="/mnt/disks/backup/restic" data-picktree="dir"></div></div>'
         + rbCredsHtml
         + '<div class="rb-row"><label>Name:</label><input type="text" class="target-name" value="" placeholder="e.g. Hetzner Cloud"></div>'
         + '<div class="rb-row"><label>Optional Excludes:</label><select class="target-opt-exc"><option value="0" selected>No</option><option value="1">Yes</option></select></div>'
@@ -248,6 +253,7 @@ function rbInitPickTree() {
         if (input._rbPickBound) return;
         input._rbPickBound = true;
         input.addEventListener('focus', function() {
+            if (!input.hasAttribute('data-picktree')) return; // type may have changed
             rbOpenTree(input);
         });
     });
@@ -353,6 +359,7 @@ function rbLoadTree(tree, path) {
 // =============================================================================
 // TARGET TYPE CHANGE - prefix, credentials, file browser
 // =============================================================================
+// URL prefixes — hardcoded per type (displayed in span, not editable)
 var rbPrefixes = {
     local:  '',
     sftp:   'sftp://',
@@ -362,39 +369,54 @@ var rbPrefixes = {
     rclone: 'rclone:'
 };
 
-var rbPlaceholders = {
+// Placeholder for the SUFFIX input (after prefix)
+var rbSuffixPlaceholders = {
     local:  '/mnt/disks/backup/restic',
-    sftp:   'sftp://user@host:/path/to/repo',
-    s3:     's3:https://s3.amazonaws.com/bucket/path',
-    b2:     'b2:bucketname/path',
-    rest:   'rest:https://host:8000/',
-    rclone: 'rclone:remote:path'
+    sftp:   'user@host:/path/to/repo',
+    s3:     'https://s3.amazonaws.com/bucket/path',
+    b2:     'bucketname/path',
+    rest:   'https://host:8000/',
+    rclone: 'remote:path'
 };
 
 function rbTargetTypeChange(sel) {
     var card = sel.closest('.rb-card');
+    var pfxSpan  = card.querySelector('.rb-url-pfx');
     var urlInput = card.querySelector('.target-url');
-    var oldType = card.getAttribute('data-type') || 'local';
-    var newType = sel.value;
+    var oldType  = card.getAttribute('data-type') || 'local';
+    var newType  = sel.value;
     card.setAttribute('data-type', newType);
 
-    // Swap URL prefix
-    var oldPrefix = rbPrefixes[oldType] || '';
-    var newPrefix = rbPrefixes[newType] || '';
-    var val = urlInput.value;
-    if (!val || val === oldPrefix) {
-        urlInput.value = newPrefix;
-    } else if (oldPrefix && val.indexOf(oldPrefix) === 0) {
-        urlInput.value = newPrefix + val.substring(oldPrefix.length);
-    }
-    urlInput.placeholder = rbPlaceholders[newType] || '';
+    var oldPfx = pfxSpan ? pfxSpan.textContent : '';
+    var newPfx = rbPrefixes[newType] || '';
+    var suffix = urlInput.value;
 
-    // File browser
+    // Transition: local → non-local: strip any accidental prefix from value
+    if (oldType === 'local') {
+        suffix = suffix.replace(/^[a-z][a-z0-9+.-]*:(?:\/\/)?/, '');
+    }
+    // Transition: non-local → local: combine old prefix + suffix into full path
+    if (newType === 'local') {
+        urlInput.value = oldPfx + suffix;
+    } else {
+        urlInput.value = suffix;
+    }
+
+    // Update prefix span
+    if (pfxSpan) {
+        pfxSpan.textContent = newPfx;
+        pfxSpan.style.display = newType === 'local' ? 'none' : '';
+        // Adjust input border-radius
+        urlInput.style.borderRadius = newType === 'local' ? '' : '0 3px 3px 0';
+    }
+
+    urlInput.placeholder = rbSuffixPlaceholders[newType] || '';
+
+    // File browser: only local gets the picker
     if (newType === 'local') {
         urlInput.setAttribute('data-picktree', 'dir');
     } else {
         urlInput.removeAttribute('data-picktree');
-        urlInput._rbPickBound = false;
     }
     rbInitPickTree();
 
@@ -560,7 +582,11 @@ function rbCollect() {
             job.targets.push({
                 id: card.getAttribute('data-id') || rbGenId(),
                 type: card.querySelector('.target-type').value,
-                url: card.querySelector('.target-url').value.trim(),
+                url: (function() {
+                    var pfx = card.querySelector('.rb-url-pfx');
+                    var pfxText = (pfx && pfx.style.display !== 'none') ? pfx.textContent : '';
+                    return pfxText + card.querySelector('.target-url').value.trim();
+                })(),
                 name: card.querySelector('.target-name').value.trim(),
                 use_optional_excludes: card.querySelector('.target-opt-exc').value === '1',
                 enabled: card.querySelector('.target-enabled').value === '1',
@@ -593,7 +619,9 @@ function rbCollect() {
 // =============================================================================
 function rbGetTargetCreds(card) {
     function v(sel) { var el = card.querySelector(sel); return el ? el.value.trim() : ''; }
+    var hkEl = card.querySelector('.cred-sftp-hostkey');
     return {
+        sftp_accept_hostkey:   hkEl ? hkEl.value === '1' : true,
         aws_access_key_id:     v('.cred-s3-key'),
         aws_secret_access_key: v('.cred-s3-secret'),
         aws_region:            v('.cred-s3-region'),
@@ -804,4 +832,174 @@ function rbMsg(text, type) {
     } else {
         alert(text);
     }
+}
+
+// =============================================================================
+// BROWSE BACKUPS
+// =============================================================================
+var rbSnapCtx = { jobId: null, targetId: null, snapshotId: null, shortId: null, currentPath: '/', pathStack: [] };
+
+function rbSnapJobChange() {
+    var jobId = document.getElementById('snap-job-sel').value;
+    var targetSel = document.getElementById('snap-target-sel');
+    var targetRow = document.getElementById('snap-target-row');
+    rbSnapCtx.jobId = jobId;
+    targetSel.innerHTML = '';
+
+    if (!jobId) { targetRow.style.display = 'none'; return; }
+
+    var panel = document.querySelector('.rb-job-panel[data-job-id="' + jobId + '"]');
+    if (!panel) { targetRow.style.display = 'none'; return; }
+
+    var targets = panel.querySelectorAll('.job-targets .rb-card');
+    targets.forEach(function(card) {
+        var opt = document.createElement('option');
+        opt.value = card.getAttribute('data-id');
+        var pfx  = card.querySelector('.rb-url-pfx');
+        var url  = card.querySelector('.target-url');
+        var name = card.querySelector('.target-name');
+        var label = (name && name.value.trim()) ||
+                    ((pfx && pfx.style.display !== 'none' ? pfx.textContent : '') + (url ? url.value.trim() : '')) ||
+                    'Target';
+        opt.textContent = label;
+        targetSel.appendChild(opt);
+    });
+
+    targetRow.style.display = targets.length > 1 ? '' : 'none';
+    rbSnapCtx.targetId = targetSel.value;
+}
+
+function rbLoadSnapshots() {
+    if (!rbSnapCtx.jobId) { rbMsg('Please select a job.', 'error'); return; }
+    rbSnapCtx.targetId = document.getElementById('snap-target-sel').value;
+
+    var btn = document.getElementById('btn-load-snaps');
+    btn.disabled = true; btn.textContent = 'Loading...';
+
+    rbAjax('job_snapshots', { job_id: rbSnapCtx.jobId, target_id: rbSnapCtx.targetId }, function(resp) {
+        btn.disabled = false; btn.textContent = 'Load Snapshots';
+        if (!Array.isArray(resp)) {
+            rbMsg('Error: ' + (resp.message || JSON.stringify(resp)), 'error'); return;
+        }
+
+        var tbody = document.getElementById('snap-tbody');
+        tbody.innerHTML = '';
+        if (resp.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="padding:12px;text-align:center;color:var(--text-muted);">No snapshots found</td></tr>';
+        } else {
+            resp.forEach(function(snap) {
+                var d = new Date(snap.time);
+                var date = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0')
+                         + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+                var tags  = (snap.tags || []).join(', ') || '-';
+                var tr = document.createElement('tr');
+                tr.innerHTML = '<td style="font-family:monospace;">' + escHtml(snap.short_id) + '</td>'
+                    + '<td>' + escHtml(date) + '</td>'
+                    + '<td>' + escHtml(snap.hostname || '-') + '</td>'
+                    + '<td>' + escHtml(tags) + '</td>'
+                    + '<td><button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbOpenSnapBrowser(\''
+                    + escAttr(snap.id) + '\',\'' + escAttr(snap.short_id) + '\')">Browse</button></td>';
+                tbody.appendChild(tr);
+            });
+        }
+        document.getElementById('snap-list').style.display = '';
+        document.getElementById('snap-browser').style.display = 'none';
+    }, function(err) {
+        btn.disabled = false; btn.textContent = 'Load Snapshots';
+        rbMsg('Failed: ' + err, 'error');
+    });
+}
+
+function rbOpenSnapBrowser(snapshotId, shortId) {
+    rbSnapCtx.snapshotId = snapshotId;
+    rbSnapCtx.shortId    = shortId;
+    rbSnapCtx.currentPath = '/';
+    rbSnapCtx.pathStack   = [];
+    document.getElementById('snap-browser-id').textContent   = shortId;
+    document.getElementById('snap-restore-msg').style.display = 'none';
+    document.getElementById('snap-browser').style.display    = '';
+    rbSnapBrowse('/');
+}
+
+function rbSnapBrowse(path) {
+    rbSnapCtx.currentPath = path;
+    document.getElementById('snap-browser-path').textContent = path || '/';
+    var list = document.getElementById('snap-browser-list');
+    list.innerHTML = '<div style="padding:8px;color:var(--text-muted);">Loading...</div>';
+
+    rbAjax('snapshot_ls', {
+        job_id:      rbSnapCtx.jobId,
+        target_id:   rbSnapCtx.targetId,
+        snapshot_id: rbSnapCtx.snapshotId,
+        path:        path || '/'
+    }, function(resp) {
+        if (resp.status !== 'success') {
+            list.innerHTML = '<div style="padding:8px;color:var(--red);">Error: ' + escHtml(resp.message || '?') + '</div>';
+            return;
+        }
+        var items = resp.items || [];
+        var html  = '';
+        if (items.length === 0) {
+            html = '<div style="padding:8px;color:var(--text-muted);">Empty directory</div>';
+        }
+        items.forEach(function(item) {
+            var isDir = item.type === 'dir';
+            var icon  = isDir ? '&#128193;' : '&#128196;';
+            var size  = !isDir ? ' <span style="color:var(--text-muted);font-size:.8em;">' + rbFmtBytes(item.size) + '</span>' : '';
+            var click = isDir ? ' onclick="rbSnapClickItem(\'' + escAttr(item.path) + '\')" style="cursor:pointer;"' : '';
+            html += '<div class="rb-tree-item"' + click + ' data-path="' + escAttr(item.path) + '">'
+                + '<span class="rb-tree-icon">' + icon + '</span> ' + escHtml(item.name) + size + '</div>';
+        });
+        list.innerHTML = html;
+    }, function(err) {
+        list.innerHTML = '<div style="padding:8px;color:var(--red);">Error: ' + escHtml(err) + '</div>';
+    });
+}
+
+function rbSnapClickItem(path) {
+    rbSnapCtx.pathStack.push(rbSnapCtx.currentPath);
+    rbSnapBrowse(path);
+}
+
+function rbSnapBrowserUp() {
+    if (rbSnapCtx.pathStack.length > 0) {
+        rbSnapBrowse(rbSnapCtx.pathStack.pop());
+    } else {
+        rbSnapBrowse('/');
+    }
+}
+
+function rbSnapRestore() {
+    var dest = document.getElementById('snap-restore-dest').value.trim();
+    if (!dest) { rbMsg('Please enter a destination path.', 'error'); return; }
+    var msg = document.getElementById('snap-restore-msg');
+    msg.textContent = 'Starting restore...';
+    msg.style.color = '#f39c12';
+    msg.style.display = 'block';
+
+    rbAjax('snapshot_restore', {
+        job_id:       rbSnapCtx.jobId,
+        target_id:    rbSnapCtx.targetId,
+        snapshot_id:  rbSnapCtx.snapshotId,
+        include_path: rbSnapCtx.currentPath,
+        dest:         dest
+    }, function(resp) {
+        if (resp.status === 'started') {
+            msg.textContent = resp.message || 'Restore started.';
+            msg.style.color = '#27ae60';
+        } else {
+            msg.textContent = 'Error: ' + (resp.message || JSON.stringify(resp));
+            msg.style.color = '#c0392b';
+        }
+    }, function(err) {
+        msg.textContent = 'Error: ' + err;
+        msg.style.color = '#c0392b';
+    });
+}
+
+function rbFmtBytes(bytes) {
+    if (!bytes) return '0 B';
+    var u = ['B','KB','MB','GB','TB'], i = 0;
+    while (bytes >= 1024 && i < u.length - 1) { bytes /= 1024; i++; }
+    return bytes.toFixed(i > 0 ? 1 : 0) + '\u00a0' + u[i];
 }

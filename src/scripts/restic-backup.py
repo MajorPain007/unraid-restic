@@ -36,7 +36,6 @@ class Logger:
     def log(self, level, msg):
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         formatted = f"[{timestamp}] [{level}] {msg}"
-        print(formatted, flush=True)
         try:
             with open(self.logfile, "a") as f:
                 f.write(formatted + "\n")
@@ -162,6 +161,14 @@ def build_target_env(target):
         if creds.get("b2_account_key"):
             env["B2_ACCOUNT_KEY"] = creds["b2_account_key"]
     return env
+
+def get_sftp_opts(target):
+    """Return extra restic CLI args for SFTP host key handling."""
+    if target.get("type") != "sftp":
+        return []
+    if target.get("credentials", {}).get("sftp_accept_hostkey", True):
+        return ["-o", "sftp.args=-o StrictHostKeyChecking=accept-new"]
+    return []
 
 def get_target_url(target):
     """Return the restic repository URL, injecting REST credentials if set."""
@@ -321,7 +328,8 @@ def run_job(config, job):
             logger.info(f"Target: {name}")
             t_repo = time.time()
 
-            cmd = ["restic", "-r", url, "backup", "."]
+            sftp_opts = get_sftp_opts(target)
+            cmd = ["restic", "-r", url] + sftp_opts + ["backup", "."]
             if tags:
                 cmd.extend(["--tag", tags])
             if hostname:
@@ -358,7 +366,7 @@ def run_job(config, job):
                 logger.info(f"  Upload done ({up_dur})")
 
                 # Retention / Prune
-                prune_cmd = ["restic", "-r", url, "forget", "--prune"]
+                prune_cmd = ["restic", "-r", url] + sftp_opts + ["forget", "--prune"]
                 kd = retention.get("keep_daily", 7)
                 kw = retention.get("keep_weekly", 4)
                 km = retention.get("keep_monthly", 0)
@@ -372,7 +380,7 @@ def run_job(config, job):
                 run_cmd(prune_cmd, check=False, env=target_env)
 
                 # Stats
-                stats = run_cmd(["restic", "-r", url, "stats", "latest",
+                stats = run_cmd(["restic", "-r", url] + sftp_opts + ["stats", "latest",
                                  "--mode", "restore-size"], check=False, capture_output=True, env=target_env)
                 if stats and isinstance(stats, str):
                     for line in stats.splitlines():
@@ -393,7 +401,7 @@ def run_job(config, job):
                 if should_check:
                     pct = check_conf.get("percentage", "2%")
                     logger.info(f"  Integrity check ({pct})...")
-                    cr = run_cmd(["restic", "-r", url, "check", f"--read-data-subset={pct}"], check=False, env=target_env)
+                    cr = run_cmd(["restic", "-r", url] + sftp_opts + ["check", f"--read-data-subset={pct}"], check=False, env=target_env)
                     if cr is True:
                         logger.info("  Check passed")
                     else:

@@ -23,7 +23,17 @@ $jobs = $config['jobs'] ?? [];
 .rb-section-body.hidden { display: none; }
 .rb-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
 .rb-row label { min-width: 170px; font-weight: bold; flex-shrink: 0; }
-.rb-row input[type="text"], .rb-row input[type="number"], .rb-row select { flex: 1; min-width: 180px; max-width: 480px; padding: 5px 8px; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 3px; }
+.rb-row input[type="text"], .rb-row input[type="number"], .rb-row input[type="password"], .rb-row select { flex: 1; min-width: 180px; max-width: 480px; padding: 5px 8px; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 3px; }
+/* URL split display */
+.rb-url-wrap { display:flex; flex:1; min-width:180px; max-width:480px; }
+.rb-url-pfx { background:var(--bg-card); border:1px solid var(--border); border-right:none; padding:5px 8px; border-radius:3px 0 0 3px; color:var(--text-muted); white-space:nowrap; font-family:monospace; font-size:.9em; display:flex; align-items:center; user-select:none; }
+.rb-url-wrap .target-url { border-radius:0 3px 3px 0; flex:1; min-width:0; max-width:none; }
+/* Snapshot table */
+.rb-snap-table { width:100%; border-collapse:collapse; font-size:.88em; margin-top:8px; }
+.rb-snap-table th { text-align:left; padding:5px 8px; border-bottom:1px solid var(--border); color:var(--text-muted); font-size:.8em; text-transform:uppercase; }
+.rb-snap-table td { padding:5px 8px; border-bottom:1px solid var(--border); vertical-align:middle; }
+.rb-snap-table tr:last-child td { border-bottom:none; }
+.rb-snap-table tr:hover td { background:rgba(255,255,255,.02); }
 .rb-hint { color: var(--text-muted); font-size: .82em; width: 100%; padding-left: 180px; }
 
 /* Buttons */
@@ -179,7 +189,14 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
                     <div class="rb-section-body">
                         <div class="job-targets">
                             <?php foreach (($j['targets'] ?? []) as $ti => $t): ?>
-                            <?php $ttype = $t['type'] ?? 'local'; $tcreds = $t['credentials'] ?? []; ?>
+                            <?php
+                            $ttype  = $t['type'] ?? 'local';
+                            $tcreds = $t['credentials'] ?? [];
+                            $tpfxMap = ['sftp'=>'sftp://','s3'=>'s3:','b2'=>'b2:','rest'=>'rest:','rclone'=>'rclone:'];
+                            $tpfx   = $tpfxMap[$ttype] ?? '';
+                            $tfull  = $t['url'] ?? '';
+                            $tsuffix = ($tpfx && strncmp($tfull, $tpfx, strlen($tpfx)) === 0) ? substr($tfull, strlen($tpfx)) : $tfull;
+                            ?>
                             <div class="rb-card" data-id="<?= htmlspecialchars($t['id'] ?? '') ?>" data-type="<?= htmlspecialchars($ttype) ?>">
                                 <div class="rb-card-hdr">
                                     <span class="rb-card-title">Target #<?= $ti+1 ?></span>
@@ -202,11 +219,21 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
                                 </div>
                                 <div class="rb-row">
                                     <label>Repository URL:</label>
-                                    <input type="text" class="target-url" value="<?= htmlspecialchars($t['url'] ?? '') ?>" placeholder="<?= ($t['type'] ?? 'local') === 'local' ? '/mnt/disks/backup/restic' : 'sftp://user@host:/path' ?>"<?= ($t['type'] ?? 'local') === 'local' ? ' data-picktree="dir"' : '' ?>>
+                                    <div class="rb-url-wrap">
+                                        <span class="rb-url-pfx"<?= $ttype === 'local' ? ' style="display:none;"' : '' ?>><?= htmlspecialchars($tpfx) ?></span>
+                                        <input type="text" class="target-url" value="<?= htmlspecialchars($tsuffix) ?>" placeholder="<?= $ttype === 'local' ? '/mnt/disks/backup/restic' : '' ?>"<?= $ttype === 'local' ? ' data-picktree="dir"' : ' style="border-radius:0 3px 3px 0;"' ?>>
+                                    </div>
                                 </div>
                                 <!-- Credentials per type -->
                                 <div class="target-creds target-creds-sftp"<?= $ttype !== 'sftp' ? ' style="display:none;"' : '' ?>>
                                     <div class="rb-hint" style="padding-left:0;margin-bottom:6px;">SFTP uses SSH key auth — configure in <code>/root/.ssh/config</code>.</div>
+                                    <div class="rb-row">
+                                        <label>Accept New Host Key:</label>
+                                        <select class="cred-sftp-hostkey">
+                                            <option value="1" <?= ($tcreds['sftp_accept_hostkey'] ?? true) ? 'selected' : '' ?>>Yes (StrictHostKeyChecking=accept-new)</option>
+                                            <option value="0" <?= !($tcreds['sftp_accept_hostkey'] ?? true) ? 'selected' : '' ?>>No (manual known_hosts required)</option>
+                                        </select>
+                                    </div>
                                 </div>
                                 <div class="target-creds target-creds-s3"<?= $ttype !== 's3' ? ' style="display:none;"' : '' ?>>
                                     <div class="rb-row"><label>Access Key ID:</label><input type="text" class="cred-s3-key" value="<?= htmlspecialchars($tcreds['aws_access_key_id'] ?? '') ?>" placeholder="AKIAIOSFODNN7EXAMPLE"></div>
@@ -369,6 +396,62 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
         <?php if (empty($jobs)): ?>
         <p style="color:var(--text-muted);text-align:center;padding:20px;">No backup jobs configured. Click "+ Add Job" to create one.</p>
         <?php endif; ?>
+    </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- BROWSE BACKUPS -->
+<!-- ================================================================ -->
+<div class="rb-section">
+    <div class="rb-section-hdr closed" onclick="rbToggle(this)">
+        <span>Browse Backups</span><span class="arr">&#9660;</span>
+    </div>
+    <div class="rb-section-body hidden">
+        <div class="rb-row">
+            <label>Job:</label>
+            <select id="snap-job-sel" onchange="rbSnapJobChange()">
+                <option value="">-- Select Job --</option>
+                <?php foreach ($jobs as $j): ?>
+                <option value="<?= htmlspecialchars($j['id']) ?>"><?= htmlspecialchars($j['name'] ?: 'Unnamed') ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div class="rb-row" id="snap-target-row" style="display:none;">
+            <label>Target:</label>
+            <select id="snap-target-sel" onchange="rbSnapCtx.targetId=this.value"></select>
+        </div>
+        <div class="rb-row">
+            <button class="rb-btn rb-btn-accent" id="btn-load-snaps" onclick="rbLoadSnapshots()">Load Snapshots</button>
+        </div>
+
+        <!-- Snapshot list -->
+        <div id="snap-list" style="display:none;">
+            <table class="rb-snap-table">
+                <thead><tr><th>ID</th><th>Date</th><th>Hostname</th><th>Tags</th><th></th></tr></thead>
+                <tbody id="snap-tbody"></tbody>
+            </table>
+        </div>
+
+        <!-- Snapshot browser -->
+        <div id="snap-browser" style="display:none;margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+                <strong>Snapshot:</strong>
+                <span id="snap-browser-id" style="font-family:monospace;color:var(--accent);"></span>
+                <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbSnapBrowserUp()">&#8593; Up</button>
+                <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="document.getElementById('snap-browser').style.display='none'">Close</button>
+            </div>
+            <div id="snap-browser-path" style="font-family:monospace;color:var(--text-muted);font-size:.85em;margin-bottom:6px;">/</div>
+            <div id="snap-browser-list" class="rb-tree" style="max-height:350px;max-width:600px;">
+                <div style="padding:8px;color:var(--text-muted);">Select a snapshot to browse</div>
+            </div>
+            <div class="rb-row" style="margin-top:12px;">
+                <label>Restore to:</label>
+                <input type="text" id="snap-restore-dest" placeholder="/mnt/user/restore" data-picktree="dir" style="flex:1;max-width:360px;">
+                <button class="rb-btn rb-btn-accent" onclick="rbSnapRestore()">Restore</button>
+            </div>
+            <div class="rb-hint">Restores the currently browsed path (and everything below it) from the selected snapshot to the destination folder.</div>
+            <div id="snap-restore-msg" style="display:none;margin-top:6px;font-size:.88em;"></div>
+        </div>
     </div>
 </div>
 

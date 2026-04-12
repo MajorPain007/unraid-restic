@@ -87,6 +87,17 @@ function restic_creds_env(string $type, array $creds): string {
 }
 
 /**
+ * Return extra restic CLI args for SFTP StrictHostKeyChecking.
+ */
+function restic_sftp_args(string $type, array $creds): array {
+    if ($type !== 'sftp') return [];
+    if ($creds['sftp_accept_hostkey'] ?? true) {
+        return ['-o', 'sftp.args=-o StrictHostKeyChecking=accept-new'];
+    }
+    return [];
+}
+
+/**
  * Inject REST credentials into the URL.
  * rest:https://host:8000/ + user/pass → rest:https://user:pass@host:8000/
  */
@@ -208,7 +219,9 @@ switch ($action) {
             $env .= 'RESTIC_PASSWORD=' . escapeshellarg($pw_inline);
         }
 
-        $cmd = "{$env} restic -r " . escapeshellarg($url) . " init 2>&1";
+        $sftp_args = restic_sftp_args($type, $creds);
+        $sfx = implode(' ', array_map('escapeshellarg', $sftp_args));
+        $cmd = "{$env} restic -r " . escapeshellarg($url) . ($sfx ? " $sfx" : '') . " init 2>&1";
         $output = [];
         exec($cmd, $output, $ret);
         $text = implode("\n", $output);
@@ -245,7 +258,9 @@ switch ($action) {
             $env .= 'RESTIC_PASSWORD=' . escapeshellarg($pw_inline);
         }
 
-        $cmd = "{$env} restic -r " . escapeshellarg($url) . " snapshots --latest 1 2>&1";
+        $sftp_args = restic_sftp_args($type, $creds);
+        $sfx = implode(' ', array_map('escapeshellarg', $sftp_args));
+        $cmd = "{$env} restic -r " . escapeshellarg($url) . ($sfx ? " $sfx" : '') . " snapshots --latest 1 2>&1";
         $output = [];
         exec($cmd, $output, $ret);
         $text = implode("\n", $output);
@@ -337,6 +352,140 @@ switch ($action) {
         } else {
             echo json_encode(['status' => 'error', 'message' => $text]);
         }
+        break;
+
+    // =========================================================================
+    // JOB SNAPSHOTS  (uses saved job/target config)
+    // =========================================================================
+    case 'job_snapshots':
+        $job_id    = $data['job_id']    ?? '';
+        $target_id = $data['target_id'] ?? '';
+
+        if (!$job_id) {
+            echo json_encode(['status' => 'error', 'message' => 'No job_id']);
+            break;
+        }
+
+        $tc = restic_get_target_config($job_id, $target_id);
+        if (!$tc) {
+            echo json_encode(['status' => 'error', 'message' => 'Job or target not found']);
+            break;
+        }
+
+        $env_str  = restic_build_env_str($tc['env']);
+        $sfx      = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+             . ($sfx ? " $sfx" : '')
+             . " snapshots --json 2>&1";
+
+        $output = [];
+        exec($cmd, $output, $ret);
+        $text = implode("\n", $output);
+
+        if ($ret === 0) {
+            echo $text;
+        } else {
+            echo json_encode(['status' => 'error', 'message' => $text ?: 'snapshots failed (exit ' . $ret . ')']);
+        }
+        break;
+
+    // =========================================================================
+    // SNAPSHOT LS  (list files in a snapshot at a given path)
+    // =========================================================================
+    case 'snapshot_ls':
+        $job_id      = $data['job_id']      ?? '';
+        $target_id   = $data['target_id']   ?? '';
+        $snapshot_id = $data['snapshot_id'] ?? '';
+        $path        = $data['path']        ?? '/';
+
+        if (!$job_id || !$snapshot_id) {
+            echo json_encode(['status' => 'error', 'message' => 'Missing job_id or snapshot_id']);
+            break;
+        }
+
+        // Sanitize path — must be absolute, no null bytes
+        $path = str_replace("\0", '', $path);
+        if (!$path || $path[0] !== '/') $path = '/';
+
+        $tc = restic_get_target_config($job_id, $target_id);
+        if (!$tc) {
+            echo json_encode(['status' => 'error', 'message' => 'Job or target not found']);
+            break;
+        }
+
+        $env_str = restic_build_env_str($tc['env']);
+        $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+             . ($sfx ? " $sfx" : '')
+             . " ls --json " . escapeshellarg($snapshot_id)
+             . " " . escapeshellarg($path) . " 2>&1";
+
+        $output = [];
+        exec($cmd, $output, $ret);
+
+        if ($ret !== 0) {
+            echo json_encode(['status' => 'error', 'message' => implode("\n", $output)]);
+            break;
+        }
+
+        // restic ls --json emits one JSON object per line
+        $items = [];
+        foreach ($output as $line) {
+            $line = trim($line);
+            if ($line === '') continue;
+            $obj = @json_decode($line, true);
+            if (is_array($obj)) $items[] = $obj;
+        }
+        echo json_encode(['status' => 'success', 'items' => $items]);
+        break;
+
+    // =========================================================================
+    // SNAPSHOT RESTORE  (background restore job)
+    // =========================================================================
+    case 'snapshot_restore':
+        $job_id      = $data['job_id']      ?? '';
+        $target_id   = $data['target_id']   ?? '';
+        $snapshot_id = $data['snapshot_id'] ?? '';
+        $include     = $data['include_path'] ?? '/';
+        $dest        = $data['dest']         ?? '';
+
+        if (!$job_id || !$snapshot_id || !$dest) {
+            echo json_encode(['status' => 'error', 'message' => 'Missing required fields']);
+            break;
+        }
+
+        // Sanitize paths
+        $include = str_replace("\0", '', $include);
+        $dest    = str_replace("\0", '', $dest);
+        if (!$dest || $dest[0] !== '/') {
+            echo json_encode(['status' => 'error', 'message' => 'dest must be an absolute path']);
+            break;
+        }
+
+        $tc = restic_get_target_config($job_id, $target_id);
+        if (!$tc) {
+            echo json_encode(['status' => 'error', 'message' => 'Job or target not found']);
+            break;
+        }
+
+        $env_str = restic_build_env_str($tc['env']);
+        $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $logfile = RESTIC_LOG_DIR . '/restic-restore-' . date('Ymd-His') . '.log';
+
+        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+             . ($sfx ? " $sfx" : '')
+             . " restore " . escapeshellarg($snapshot_id)
+             . " --include " . escapeshellarg($include)
+             . " --target " . escapeshellarg($dest)
+             . " >> " . escapeshellarg($logfile) . " 2>&1";
+
+        exec("nohup bash -c " . escapeshellarg($cmd) . " &");
+
+        echo json_encode([
+            'status'  => 'started',
+            'message' => "Restore started → {$dest}  (log: {$logfile})",
+            'logfile' => $logfile,
+        ]);
         break;
 
     // =========================================================================

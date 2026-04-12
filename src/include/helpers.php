@@ -186,7 +186,7 @@ function restic_update_cron(array $config): void {
     }
     if (!empty($lines)) {
         @file_put_contents($cron_file, implode("\n", $lines) . "\n");
-    } else {
+    } elseif (file_exists($cron_file)) {
         @unlink($cron_file);
     }
 }
@@ -213,6 +213,71 @@ function restic_list_dirs(string $path): array {
     }
     sort($dirs);
     return $dirs;
+}
+
+/**
+ * Build a shell env-var prefix string from an associative array.
+ * Keys must be [A-Z_][A-Z0-9_]* to be included.
+ */
+function restic_build_env_str(array $env): string {
+    $parts = [];
+    foreach ($env as $k => $v) {
+        if (preg_match('/^[A-Z_][A-Z0-9_]*$/', $k)) {
+            $parts[] = $k . '=' . escapeshellarg((string)$v);
+        }
+    }
+    return $parts ? implode(' ', $parts) . ' ' : '';
+}
+
+/**
+ * Load job + target from saved config and build everything needed to run restic.
+ * Returns array with keys: url, env, sftp_args, target, job  — or null on error.
+ */
+function restic_get_target_config(string $job_id, string $target_id): ?array {
+    $config = restic_load_config();
+    $general = $config['general'] ?? [];
+
+    $job = null;
+    foreach ($config['jobs'] as $j) {
+        if (($j['id'] ?? '') === $job_id) { $job = $j; break; }
+    }
+    if (!$job) return null;
+
+    $target = null;
+    foreach ($job['targets'] as $t) {
+        if (($t['id'] ?? '') === $target_id) { $target = $t; break; }
+    }
+    if (!$target) return null;
+
+    $type  = $target['type'] ?? 'local';
+    $creds = is_array($target['credentials'] ?? null) ? $target['credentials'] : [];
+
+    // Build URL (inject REST creds if needed)
+    $url = $target['url'] ?? '';
+    if ($type === 'rest' && function_exists('restic_inject_rest_creds')) {
+        $url = restic_inject_rest_creds($url, $creds);
+    }
+
+    // Build env array
+    $env = [];
+    $pw_mode = $general['password_mode'] ?? 'file';
+    if ($pw_mode === 'file' && !empty($general['password_file'])) {
+        $env['RESTIC_PASSWORD_FILE'] = $general['password_file'];
+    } elseif ($pw_mode === 'inline' && !empty($general['password_inline'])) {
+        $env['RESTIC_PASSWORD'] = $general['password_inline'];
+    }
+    if ($type === 's3') {
+        if (!empty($creds['aws_access_key_id']))     $env['AWS_ACCESS_KEY_ID']     = $creds['aws_access_key_id'];
+        if (!empty($creds['aws_secret_access_key'])) $env['AWS_SECRET_ACCESS_KEY'] = $creds['aws_secret_access_key'];
+        if (!empty($creds['aws_region']))             $env['AWS_DEFAULT_REGION']    = $creds['aws_region'];
+    } elseif ($type === 'b2') {
+        if (!empty($creds['b2_account_id']))  $env['B2_ACCOUNT_ID']  = $creds['b2_account_id'];
+        if (!empty($creds['b2_account_key'])) $env['B2_ACCOUNT_KEY'] = $creds['b2_account_key'];
+    }
+
+    $sftp_args = function_exists('restic_sftp_args') ? restic_sftp_args($type, $creds) : [];
+
+    return compact('url', 'env', 'sftp_args', 'target', 'job');
 }
 
 /**

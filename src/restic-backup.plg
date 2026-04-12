@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "restic-backup">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.04.12.03">
-<!ENTITY md5       "cb9f2bd8d62484bb19b2a475da4eb7ef">
+<!ENTITY version   "2026.04.12">
+<!ENTITY md5       "e7fb94ea6fe797ae015d774cc1e59c13">
 <!ENTITY launch    "Settings/ResticBackup">
 <!ENTITY github    "MajorPain007/unraid-restic">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/src/&name;.plg">
