@@ -847,7 +847,27 @@ function rbMsg(text, type) {
 // =============================================================================
 var rbSnapCtx = { jobId: null, targetId: null, snapshotId: null, shortId: null,
                   currentPath: '/', basePath: '/', pathStack: [] };
-var rbSnapCache = {}; // key: snapshotId + ':' + path → items[]
+var rbSnapCache = {};     // key: snapshotId + ':' + path → items[] (legacy, unused when index present)
+var rbSnapIndex = {};     // key: snapshotId → flat entries[] (all files/dirs from one prefetch call)
+
+// Filter flat index to direct children of path, sort dirs-first
+function rbSnapFilterLocal(entries, path) {
+    var norm   = (path === '/') ? '' : path.replace(/\/$/, '');
+    var prefix = (norm === '') ? '/' : norm + '/';
+    var items  = entries.filter(function(e) {
+        var p = e.path;
+        if (!p || p === norm) return false;
+        if (p.indexOf(prefix) !== 0) return false;
+        var rest = p.slice(prefix.length);
+        return rest !== '' && rest.indexOf('/') === -1;
+    });
+    items.sort(function(a, b) {
+        var ad = a.type === 'dir' ? 0 : 1, bd = b.type === 'dir' ? 0 : 1;
+        if (ad !== bd) return ad - bd;
+        return (a.name || '').localeCompare(b.name || '');
+    });
+    return items;
+}
 
 function rbSnapJobChange() {
     var jobId = document.getElementById('snap-job-sel').value;
@@ -923,9 +943,10 @@ function rbLoadSnapshots() {
 }
 
 function rbOpenSnapBrowser(snapshotId, shortId, paths) {
-    // Clear cache for new snapshot
+    // Clear caches when switching to a different snapshot
     if (rbSnapCtx.snapshotId !== snapshotId) {
         rbSnapCache = {};
+        // keep rbSnapIndex — entries are valid until page reload
     }
     rbSnapCtx.snapshotId  = snapshotId;
     rbSnapCtx.shortId     = shortId;
@@ -992,29 +1013,30 @@ function rbSnapRenderItems(items, path) {
 
 function rbSnapBrowse(path) {
     rbSnapCtx.currentPath = path;
-    var cacheKey = rbSnapCtx.snapshotId + ':' + path;
-    // Serve from cache instantly if available
-    if (rbSnapCache[cacheKey]) {
-        rbSnapRenderItems(rbSnapCache[cacheKey], path);
+
+    // If full index already loaded, filter locally — zero server round-trips
+    if (rbSnapIndex[rbSnapCtx.snapshotId]) {
+        var items = rbSnapFilterLocal(rbSnapIndex[rbSnapCtx.snapshotId], path);
+        rbSnapRenderItems(items, path);
         return;
     }
 
     document.getElementById('snap-browser-path').innerHTML = rbSnapBuildCrumbs(path);
     var list = document.getElementById('snap-browser-list');
-    list.innerHTML = '<div style="padding:10px;color:var(--text-muted);">Loading\u2026</div>';
+    list.innerHTML = '<div style="padding:10px;color:var(--text-muted);">Loading\u2026 (first load fetches full index)</div>';
 
-    rbAjax('snapshot_ls', {
+    // Fetch the full flat listing once; all navigation will be local after this
+    rbAjax('snapshot_prefetch', {
         job_id:      rbSnapCtx.jobId,
         target_id:   rbSnapCtx.targetId,
-        snapshot_id: rbSnapCtx.snapshotId,
-        path:        path || '/'
+        snapshot_id: rbSnapCtx.snapshotId
     }, function(resp) {
         if (resp.status !== 'success') {
             list.innerHTML = '<div style="padding:10px;color:var(--red);">Error: ' + escHtml(resp.message || '?') + '</div>';
             return;
         }
-        var items = resp.items || [];
-        rbSnapCache[cacheKey] = items; // cache for instant Up navigation
+        rbSnapIndex[rbSnapCtx.snapshotId] = resp.entries || [];
+        var items = rbSnapFilterLocal(rbSnapIndex[rbSnapCtx.snapshotId], path);
         rbSnapRenderItems(items, path);
     }, function(err) {
         list.innerHTML = '<div style="padding:10px;color:var(--red);">Error: ' + escHtml(err) + '</div>';

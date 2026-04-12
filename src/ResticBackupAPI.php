@@ -390,6 +390,83 @@ switch ($action) {
         break;
 
     // =========================================================================
+    // SNAPSHOT PREFETCH  (return compact full flat listing for JS-side filtering)
+    // =========================================================================
+    case 'snapshot_prefetch': {
+        $job_id      = $data['job_id']      ?? '';
+        $target_id   = $data['target_id']   ?? '';
+        $snapshot_id = $data['snapshot_id'] ?? '';
+
+        if (!$job_id || !$snapshot_id) {
+            echo json_encode(['status' => 'error', 'message' => 'Missing job_id or snapshot_id']);
+            break;
+        }
+
+        $tc = restic_get_target_config($job_id, $target_id);
+        if (!$tc) {
+            echo json_encode(['status' => 'error', 'message' => 'Job or target not found']);
+            break;
+        }
+
+        $env_str = restic_build_env_str($tc['env']);
+        $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $safe_id    = preg_replace('/[^a-f0-9]/', '', strtolower($snapshot_id));
+        $cache_file = "/tmp/restic-ls-{$safe_id}.json";
+        $cache_ttl  = 300;
+
+        // Build cache file if needed
+        if (!file_exists($cache_file) || (time() - filemtime($cache_file)) >= $cache_ttl) {
+            $tmp_file = $cache_file . '.tmp';
+            $err_file = $cache_file . '.err';
+            $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+                 . ($sfx ? " $sfx" : '')
+                 . " ls --json " . escapeshellarg($snapshot_id)
+                 . " > " . escapeshellarg($tmp_file)
+                 . " 2> " . escapeshellarg($err_file);
+            $unused = [];
+            exec($cmd, $unused, $ret);
+            if ($ret !== 0) {
+                $err = trim(@file_get_contents($err_file) ?: 'restic ls failed (exit ' . $ret . ')');
+                @unlink($tmp_file); @unlink($err_file);
+                echo json_encode(['status' => 'error', 'message' => $err]);
+                break;
+            }
+            @unlink($err_file);
+            rename($tmp_file, $cache_file);
+        }
+
+        // Stream cache file line-by-line, emit compact entries to avoid
+        // building a huge array in PHP memory.
+        $fh = @fopen($cache_file, 'r');
+        if (!$fh) {
+            echo json_encode(['status' => 'error', 'message' => 'Cannot read snapshot cache']);
+            break;
+        }
+        echo '{"status":"success","entries":[';
+        $first = true;
+        while (($line = fgets($fh)) !== false) {
+            $line = trim($line);
+            if ($line === '') continue;
+            $obj = @json_decode($line, true);
+            if (!is_array($obj) || !isset($obj['path'])) continue;
+            $p = rtrim($obj['path'], '/');
+            if ($p === '') continue;
+            $entry = [
+                'path' => $p,
+                'type' => $obj['type'] ?? 'file',
+                'name' => $obj['name'] ?? basename($p),
+                'size' => $obj['size'] ?? 0,
+            ];
+            if (!$first) echo ',';
+            echo json_encode($entry);
+            $first = false;
+        }
+        fclose($fh);
+        echo ']}';
+        break;
+    }
+
+    // =========================================================================
     // SNAPSHOT LS  (list files in a snapshot at a given path)
     // =========================================================================
     case 'snapshot_ls':
