@@ -201,36 +201,20 @@ def create_zfs_snapshots(zfs_conf):
         return []
 
     datasets = zfs_conf.get("datasets", [])
-    recursive = zfs_conf.get("recursive", True)
     prefix = zfs_conf.get("snapshot_prefix", "restic-backup")
     snap_name = f"{prefix}-{datetime.datetime.now():%Y%m%d-%H%M%S}"
     created = []
 
-    for parent_ds in datasets:
-        if recursive:
-            try:
-                output = subprocess.check_output(
-                    ["zfs", "list", "-H", "-r", "-o", "name", parent_ds], text=True
-                ).splitlines()
-            except subprocess.CalledProcessError as e:
-                logger.warn(f"Cannot list datasets under {parent_ds}: {e}")
-                continue
-            for ds in output:
-                ds = ds.strip()
-                if not ds: continue
-                result = run_cmd(["zfs", "snapshot", f"{ds}@{snap_name}"], check=False)
-                if result is True:
-                    created.append((ds, snap_name))
-                    logger.info(f"Snapshot: {ds}@{snap_name}")
-                else:
-                    logger.warn(f"Snapshot failed {ds}: {result}")
+    for ds in datasets:
+        ds = ds.strip()
+        if not ds:
+            continue
+        result = run_cmd(["zfs", "snapshot", f"{ds}@{snap_name}"], check=False)
+        if result is True:
+            created.append((ds, snap_name))
+            logger.info(f"Snapshot: {ds}@{snap_name}")
         else:
-            result = run_cmd(["zfs", "snapshot", f"{parent_ds}@{snap_name}"], check=False)
-            if result is True:
-                created.append((parent_ds, snap_name))
-                logger.info(f"Snapshot: {parent_ds}@{snap_name}")
-            else:
-                logger.warn(f"Snapshot failed {parent_ds}: {result}")
+            logger.warn(f"Snapshot failed {ds}: {result}")
 
     return created
 
@@ -294,6 +278,16 @@ def prepare_job_env(job):
             logger.info(f"Source: {path} -> {label}")
         else:
             logger.warn(f"Mount failed {path}: {result}")
+
+    # /boot (Unraid USB key) — bind-mount read-only as boot/
+    if job.get("backup_boot", False):
+        boot_target = os.path.join(job_root, "boot")
+        os.makedirs(boot_target, exist_ok=True)
+        result = run_cmd(["mount", "--bind", "-o", "ro", "/boot", boot_target], check=False)
+        if result is True:
+            logger.info("Source: /boot -> boot/")
+        else:
+            logger.warn(f"Mount /boot failed: {result}")
 
     # ZFS Snapshots
     snapshots = create_zfs_snapshots(job.get("zfs", {}))

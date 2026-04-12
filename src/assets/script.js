@@ -146,7 +146,6 @@ function rbJobPanelHtml(id, idx) {
     + '<div class="rb-section"><div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>ZFS Snapshots</span><span class="arr">&#9660;</span></div>'
     + '<div class="rb-section-body hidden"><p style="color:var(--text-muted);margin:0 0 10px;">Create ZFS snapshots before backup for data consistency.</p>'
     + '<div class="rb-row"><label>Enable Snapshots:</label><select class="zfs-enabled"><option value="0" selected>Disabled</option><option value="1">Enabled</option></select></div>'
-    + '<div class="rb-row"><label>Recursive:</label><select class="zfs-recursive"><option value="1" selected>Yes (all child datasets)</option><option value="0">No</option></select></div>'
     + '<div class="rb-row"><label>Snapshot Prefix:</label><input type="text" class="zfs-prefix" value="restic-backup" style="max-width:200px;"></div>'
     + '<div style="margin-top:8px;"><label style="font-weight:bold;display:block;margin-bottom:6px;">Datasets:</label>'
     + '<button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbLoadDatasets(this)" style="margin-bottom:8px;">Load Available Datasets</button>'
@@ -156,6 +155,8 @@ function rbJobPanelHtml(id, idx) {
     // Sources
     + '<div class="rb-section"><div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Source Directories</span><span class="arr">&#9660;</span></div>'
     + '<div class="rb-section-body hidden"><p style="color:var(--text-muted);margin:0 0 10px;">Directories to include in the backup. Click into a path field to browse.</p>'
+    + '<div class="rb-row" style="margin-bottom:10px;"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0;">'
+    + '<input type="checkbox" class="job-backup-boot" autocomplete="off"> <span>Include <code>/boot</code> (Unraid USB key)</span></label></div>'
     + '<div class="job-sources"></div><button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbAddSource(this)">+ Add Source</button></div></div>'
     // Excludes
     + '<div class="rb-section"><div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Exclude Patterns</span><span class="arr">&#9660;</span></div>'
@@ -491,18 +492,14 @@ function rbLoadDatasets(btn) {
 
 function rbDsToggle(cb) {
     var picker = cb.closest('.zfs-ds-picker');
-    var panel = cb.closest('.rb-job-panel') || cb.closest('.rb-section-body');
-    var recursive = panel.querySelector('.zfs-recursive');
-    var isRecursive = recursive && recursive.value === '1';
-    var val = cb.value;
-
-    if (isRecursive && cb.checked) {
-        picker.querySelectorAll('.ds-cb').forEach(function(other) {
-            if (other !== cb && other.value.indexOf(val + '/') === 0) {
-                other.checked = false;
-            }
-        });
-    }
+    var panel  = cb.closest('.rb-job-panel') || cb.closest('.rb-section-body');
+    var val    = cb.value;
+    // Auto-select all children when parent is checked; deselect when unchecked
+    picker.querySelectorAll('.ds-cb').forEach(function(other) {
+        if (other !== cb && other.value.indexOf(val + '/') === 0) {
+            other.checked = cb.checked;
+        }
+    });
     rbSyncDsToManual(panel);
 }
 
@@ -557,9 +554,9 @@ function rbCollect() {
             enabled: panel.querySelector('.job-enabled').value === '1',
             targets: [],
             sources: [],
+            backup_boot: !!(panel.querySelector('.job-backup-boot') || {}).checked,
             zfs: {
                 enabled: panel.querySelector('.zfs-enabled').value === '1',
-                recursive: panel.querySelector('.zfs-recursive').value === '1',
                 snapshot_prefix: panel.querySelector('.zfs-prefix').value.trim() || 'restic-backup',
                 datasets: []
             },

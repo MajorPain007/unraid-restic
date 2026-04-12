@@ -279,10 +279,6 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                             <select class="zfs-enabled"><option value="0" <?= !($j['zfs']['enabled'] ?? false) ? 'selected' : '' ?>>Disabled</option><option value="1" <?= ($j['zfs']['enabled'] ?? false) ? 'selected' : '' ?>>Enabled</option></select>
                         </div>
                         <div class="rb-row">
-                            <label>Recursive:</label>
-                            <select class="zfs-recursive"><option value="1" <?= ($j['zfs']['recursive'] ?? true) ? 'selected' : '' ?>>Yes (all child datasets)</option><option value="0" <?= !($j['zfs']['recursive'] ?? true) ? 'selected' : '' ?>>No</option></select>
-                        </div>
-                        <div class="rb-row">
                             <label>Snapshot Prefix:</label>
                             <input type="text" class="zfs-prefix" value="<?= htmlspecialchars($j['zfs']['snapshot_prefix'] ?? 'restic-backup') ?>" placeholder="restic-backup" style="max-width:200px;">
                         </div>
@@ -305,6 +301,12 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                     <div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Source Directories</span><span class="arr">&#9660;</span></div>
                     <div class="rb-section-body hidden">
                         <p style="color:var(--text-muted);margin:0 0 10px;">Directories to include in the backup. Click into a path field to browse.</p>
+                        <div class="rb-row" style="margin-bottom:10px;">
+                            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0;">
+                                <input type="checkbox" class="job-backup-boot" autocomplete="off" <?= !empty($j['backup_boot']) ? 'checked' : '' ?>>
+                                <span>Include <code>/boot</code> (Unraid USB key)</span>
+                            </label>
+                        </div>
                         <div class="job-sources">
                             <?php foreach (($j['sources'] ?? []) as $si => $s): ?>
                             <div class="rb-card" data-id="<?= htmlspecialchars($s['id'] ?? '') ?>">
