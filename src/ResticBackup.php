@@ -295,7 +295,13 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                             <div class="zfs-ds-picker rb-ds-list" style="display:none;"></div>
                             <div class="zfs-ds-manual">
                                 <?php foreach (($j['zfs']['datasets'] ?? []) as $ds): ?>
-                                <div class="rb-row"><input type="text" class="zfs-dataset" value="<?= htmlspecialchars($ds) ?>" placeholder="cache/appdata" style="flex:1;"><button class="rb-btn rb-btn-red rb-btn-sm" onclick="this.parentElement.remove()">X</button></div>
+                                <div class="rb-row">
+                                    <input type="text" class="zfs-dataset" value="<?= htmlspecialchars($ds) ?>" placeholder="cache/appdata" style="flex:1;" readonly>
+                                    <?php if ($j['zfs']['recursive'] ?? true): ?>
+                                    <span class="rb-hint" style="white-space:nowrap;color:var(--accent);">recursive</span>
+                                    <?php endif; ?>
+                                    <button class="rb-btn rb-btn-red rb-btn-sm" onclick="this.parentElement.remove()">X</button>
+                                </div>
                                 <?php endforeach; ?>
                             </div>
                             <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbAddDatasetInput(this)" style="margin-top:4px;">+ Add Manually</button>
