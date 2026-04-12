@@ -33,8 +33,10 @@ function rbAjax(action, data, onSuccess, onError) {
             else rbMsg(msg, 'error');
             return;
         }
-        // Extract JSON even if PHP warnings appear before it
-        var jsonStart = text.indexOf('{');
+        // Extract JSON even if PHP warnings appear before it (may be object or array)
+        var idxObj = text.indexOf('{');
+        var idxArr = text.indexOf('[');
+        var jsonStart = (idxObj < 0) ? idxArr : (idxArr < 0 ? idxObj : Math.min(idxObj, idxArr));
         if (jsonStart < 0) {
             var msg = 'No JSON in response: ' + text.substring(0, 200);
             if (onError) onError(msg);
