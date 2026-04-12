@@ -10,6 +10,21 @@
  * Never uses http_response_code() - some reverse proxies strip the body
  * on non-200 responses, causing empty responses in the browser.
  */
+while (ob_get_level() > 0) ob_end_clean();
+
+set_error_handler(function(int $errno, string $errstr): bool {
+    echo json_encode(['status' => 'error', 'message' => "PHP[$errno]: $errstr"]);
+    exit(1);
+});
+register_shutdown_function(function(): void {
+    $e = error_get_last();
+    if ($e && ($e['type'] & (E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR))) {
+        while (ob_get_level() > 0) ob_end_clean();
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['status' => 'error', 'message' => 'Fatal: ' . $e['message']]);
+    }
+});
+
 require_once '/usr/local/emhttp/plugins/restic-backup/include/helpers.php';
 
 header('Content-Type: application/json; charset=utf-8');

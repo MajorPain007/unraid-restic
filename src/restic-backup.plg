@@ -1,0 +1,120 @@
+<?xml version='1.0' standalone='yes'?>
+<!DOCTYPE PLUGIN [
+<!ENTITY name      "restic-backup">
+<!ENTITY author    "MajorPain007">
+<!ENTITY version   "2026.04.12.01">
+<!ENTITY md5       "664f8d058c0167a72c30910b242183cf">
+<!ENTITY launch    "Settings/ResticBackup">
+<!ENTITY github    "MajorPain007/unraid-restic">
+<!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/src/&name;.plg">
+<!ENTITY pkgURL    "https://raw.githubusercontent.com/&github;/main/archive">
+<!ENTITY pluginDir "/usr/local/emhttp/plugins/&name;">
+<!ENTITY configDir "/boot/config/plugins/&name;">
+<!ENTITY tmpDir    "/tmp/&name;">
+<!ENTITY resticVer "0.17.3">
+<!ENTITY resticURL "https://github.com/restic/restic/releases/download/v&resticVer;/restic_&resticVer;_linux_amd64.bz2">
+]>
+
+<PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;"
+        pluginURL="&pluginURL;"
+        min="6.12.0"
+        icon="shield">
+
+<CHANGES>
+## Version 2026.04.12.01
+- Restructure: package-based install (txz), date-based versioning (YYYY.MM.DD.NN)
+- Fix empty API responses: add CSRF token to all AJAX requests (required by Unraid emhttpd)
+- Fix output buffering in API: ob_end_clean() + error/shutdown handlers
+- Add setup_cron.sh: restores cron jobs from JSON config on every boot via rc.d
+- PLG moved to src/, root restic-backup.plg removed
+
+## Version 2025.04.05b
+- Initial release
+- Restic backup with GUI configuration
+- Multiple backup targets support
+- ZFS snapshot support (optional, recursive)
+- Configurable source directories
+- Exclude patterns (global + optional per target)
+- Scheduled backups via cron
+- Live log viewer
+</CHANGES>
+
+<!-- Create required directories -->
+<FILE Run="/bin/bash">
+<INLINE>
+mkdir -p &configDir;
+mkdir -p &tmpDir;
+</INLINE>
+</FILE>
+
+<!-- Download restic binary -->
+<FILE Name="/tmp/restic.bz2">
+<URL>&resticURL;</URL>
+</FILE>
+
+<!-- Install plugin package -->
+<FILE Name="&configDir;/&name;-&version;-x86_64-1.txz" Run="upgradepkg --install-new">
+<URL>&pkgURL;/&name;-&version;-x86_64-1.txz</URL>
+<MD5>&md5;</MD5>
+</FILE>
+
+<!-- Remove old package versions -->
+<FILE Run="/bin/bash">
+<INLINE>
+rm -f $(ls &configDir;/&name;-*.txz 2>/dev/null | grep -v '&version;')
+</INLINE>
+</FILE>
+
+<!-- Install restic binary -->
+<FILE Run="/bin/bash">
+<INLINE>
+if [ -f /tmp/restic.bz2 ]; then
+    bunzip2 -f /tmp/restic.bz2
+    mv /tmp/restic /usr/local/bin/restic
+    chmod 755 /usr/local/bin/restic
+    echo "Restic installed: $(restic version 2>/dev/null || echo 'unknown')"
+else
+    echo "WARNING: restic binary not found at /tmp/restic.bz2"
+fi
+</INLINE>
+</FILE>
+
+<!-- rc.d script: restore cron jobs on every boot -->
+<FILE Name="/etc/rc.d/rc.&name;" Mode="755">
+<INLINE>
+#!/bin/bash
+mkdir -p &tmpDir;
+&pluginDir;/scripts/setup_cron.sh &gt;&tmpDir;/setup_cron.log 2&gt;&amp;1
+</INLINE>
+</FILE>
+
+<!-- Apply cron on install/update -->
+<FILE Run="/bin/bash">
+<INLINE>
+/etc/rc.d/rc.&name;
+</INLINE>
+</FILE>
+
+<!-- Uninstall -->
+<FILE Run="/bin/bash" Method="remove">
+<INLINE>
+# Stop running backup
+if [ -f /tmp/restic-backup.pid ]; then
+    PID=$(cat /tmp/restic-backup.pid)
+    if [ -d "/proc/${PID}" ]; then
+        kill "${PID}" 2>/dev/null
+        sleep 1
+        kill -9 "${PID}" 2>/dev/null
+    fi
+    rm -f /tmp/restic-backup.pid
+    rm -f /tmp/restic-backup.lock
+fi
+rm -f /etc/cron.d/&name;
+rm -f /etc/rc.d/rc.&name;
+removepkg &name; 2>/dev/null || rm -rf &pluginDir;
+rm -rf &tmpDir;
+echo "Restic Backup removed. Settings in &configDir; preserved."
+</INLINE>
+</FILE>
+
+</PLUGIN>

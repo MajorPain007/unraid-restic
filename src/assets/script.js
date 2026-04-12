@@ -13,10 +13,12 @@ var rbActiveTree = null;
 // CORE AJAX - form-encoded POST, Unraid-compatible
 // =============================================================================
 function rbAjax(action, data, onSuccess, onError) {
-    var params = 'action=' + encodeURIComponent(action);
+    var params = new URLSearchParams();
+    params.append('action', action);
     if (data && Object.keys(data).length > 0) {
-        params += '&data=' + encodeURIComponent(JSON.stringify(data));
+        params.append('data', JSON.stringify(data));
     }
+    if (typeof csrf_token !== 'undefined') params.append('csrf_token', csrf_token);
 
     fetch(rbUrl, {
         method: 'POST',
