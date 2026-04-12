@@ -201,7 +201,7 @@ textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family
                                 </div>
                                 <div class="rb-row">
                                     <label>Repository URL:</label>
-                                    <input type="text" class="target-url" value="<?= htmlspecialchars($t['url'] ?? '') ?>" placeholder="<?= ($t['type'] ?? 'local') === 'local' ? '/mnt/disks/backup/restic' : 'sftp://user@host:/path' ?>" data-picktree="<?= ($t['type'] ?? 'local') === 'local' ? 'dir' : '' ?>">
+                                    <input type="text" class="target-url" value="<?= htmlspecialchars($t['url'] ?? '') ?>" placeholder="<?= ($t['type'] ?? 'local') === 'local' ? '/mnt/disks/backup/restic' : 'sftp://user@host:/path' ?>"<?= ($t['type'] ?? 'local') === 'local' ? ' data-picktree="dir"' : '' ?>>
                                 </div>
                                 <div class="rb-row">
                                     <label>Name:</label>

@@ -13,6 +13,7 @@
 while (ob_get_level() > 0) ob_end_clean();
 
 set_error_handler(function(int $errno, string $errstr): bool {
+    if (error_reporting() === 0) return true; // suppressed with @
     echo json_encode(['status' => 'error', 'message' => "PHP[$errno]: $errstr"]);
     exit(1);
 });

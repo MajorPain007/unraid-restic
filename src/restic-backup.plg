@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "restic-backup">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.04.12.01">
-<!ENTITY md5       "664f8d058c0167a72c30910b242183cf">
+<!ENTITY version   "2026.04.12.02">
+<!ENTITY md5       "17dbaa0bab4025552314114568c951f2">
 <!ENTITY launch    "Settings/ResticBackup">
 <!ENTITY github    "MajorPain007/unraid-restic">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/src/&name;.plg">
@@ -21,6 +21,11 @@
         icon="shield">
 
 <CHANGES>
+## Version 2026.04.12.02
+- Fix file browser appearing for non-local target types (SFTP, S3, etc.)
+- Fix save error "unlink: No such file or directory" — error handler now
+  respects @ suppression operator (error_reporting() === 0 check)
+
 ## Version 2026.04.12.01
 - Restructure: package-based install (txz), date-based versioning (YYYY.MM.DD.NN)
 - Fix empty API responses: add CSRF token to all AJAX requests (required by Unraid emhttpd)
