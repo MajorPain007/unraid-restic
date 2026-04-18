@@ -26,12 +26,13 @@ import argparse
 # CONSTANTS
 # ==============================================================================
 
-CONFIG_FILE = "/boot/config/plugins/restic-backup/restic-backup.json"
-HOOKS_DIR   = "/boot/config/plugins/restic-backup/hooks"
-STAGE_ROOT  = "/tmp/restic-stage"           # where ZFS snapshots are bound to
-LOCK_FILE   = "/tmp/restic-backup.lock"
-PID_FILE    = "/tmp/restic-backup.pid"
-LOG_DIR     = "/tmp"
+CONFIG_FILE   = "/boot/config/plugins/restic-backup/restic-backup.json"
+HOOKS_DIR     = "/boot/config/plugins/restic-backup/hooks"
+STAGE_ROOT    = "/tmp/restic-stage"         # where ZFS snapshots are bound to
+LOCK_FILE     = "/tmp/restic-backup.lock"
+PID_FILE      = "/tmp/restic-backup.pid"
+LOG_DIR       = "/tmp"
+PROGRESS_DIR  = "/tmp"                      # per-job progress JSON files
 
 # ==============================================================================
 # LOGGER
@@ -223,6 +224,27 @@ def get_sftp_opts(target):
         return ["-o", "sftp.args=-o StrictHostKeyChecking=accept-new"]
     return []
 
+def get_limit_opts(target):
+    """Return bandwidth limit flags (--limit-upload/--limit-download, KiB/s).
+
+    Restic treats these as global flags, so they go between 'restic' and the
+    subcommand. 0 (or missing) means unlimited and emits no flag.
+    """
+    opts = []
+    try:
+        up = int(target.get("limit_upload", 0) or 0)
+    except (TypeError, ValueError):
+        up = 0
+    try:
+        down = int(target.get("limit_download", 0) or 0)
+    except (TypeError, ValueError):
+        down = 0
+    if up > 0:
+        opts += ["--limit-upload", str(up)]
+    if down > 0:
+        opts += ["--limit-download", str(down)]
+    return opts
+
 def get_target_url(target):
     """Return the restic repository URL, injecting REST credentials if set."""
     url = target.get("url", "")
@@ -374,34 +396,258 @@ def build_backup_argv(cmd_head, paths):
     """
     return list(cmd_head) + list(paths)
 
-def run_backup_attempt(cmd_args, env, stages):
+def verify_restore(url, sftp_opts, lim_opts, env, abs_path):
+    """
+    Restore a single file from the `latest` snapshot of the given repo and
+    compare it byte-for-byte with the live source at `abs_path`.
+
+    Returns True on match, or an error message string on any failure
+    (source missing, restore failed, hashes differ, etc.).
+    """
+    import hashlib, shutil, tempfile
+    if not os.path.isabs(abs_path):
+        return f"verify path must be absolute: {abs_path}"
+    if not os.path.exists(abs_path):
+        return f"verify source missing: {abs_path}"
+    if not os.path.isfile(abs_path):
+        return f"verify path is not a regular file: {abs_path}"
+
+    # 1) Hash the live source.
+    src_hash = hashlib.sha256()
+    try:
+        with open(abs_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                src_hash.update(chunk)
+    except OSError as e:
+        return f"cannot read source: {e}"
+
+    # 2) Restore the single file from the newest snapshot into a temp dir.
+    tmpd = tempfile.mkdtemp(prefix="restic-verify-")
+    try:
+        cmd = ["restic", "-r", url] + sftp_opts + lim_opts + [
+            "restore", "latest",
+            "--include", abs_path,
+            "--target",  tmpd,
+        ]
+        res = run_cmd(cmd, check=False, env=env, capture_output=True)
+        restored = os.path.join(tmpd, abs_path.lstrip("/"))
+        if not os.path.exists(restored):
+            # res is either True (via capture_output returning stdout) or an
+            # error string. Either way, the restore did not materialize the
+            # expected file.
+            detail = res if isinstance(res, str) else "restored file not found"
+            return f"restore did not produce {abs_path} ({detail.strip().splitlines()[-1] if detail else 'unknown'})"
+
+        # 3) Hash the restored file and compare.
+        dst_hash = hashlib.sha256()
+        try:
+            with open(restored, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    dst_hash.update(chunk)
+        except OSError as e:
+            return f"cannot read restored file: {e}"
+
+        s_hex = src_hash.hexdigest()
+        d_hex = dst_hash.hexdigest()
+        if s_hex != d_hex:
+            return f"hash mismatch (src={s_hex[:12]}… vs restored={d_hex[:12]}…)"
+        return True
+    finally:
+        try:
+            shutil.rmtree(tmpd, ignore_errors=True)
+        except Exception:
+            pass
+
+def _progress_path(job_id):
+    """Return the per-job progress-snapshot file path."""
+    if not job_id: return None
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(job_id))
+    return os.path.join(PROGRESS_DIR, f"restic-progress-{safe}.json")
+
+def _write_progress_atomic(path, payload):
+    """Write progress snapshot atomically (tmp + rename)."""
+    if not path: return
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(payload, f, separators=(",", ":"))
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+def run_backup_attempt(cmd_args, env, stages, job_id=None, target_name=""):
     """
     Execute the restic backup command.
 
-    * No ZFS stages → just run restic directly.
-    * With stages → spawn `unshare -m` and bind-mount each staging path over
-      its original mountpoint inside the new namespace, then exec restic.
-      restic then records the ORIGINAL mountpoint (e.g. /mnt/cache/appdata)
-      in the snapshot instead of /tmp/restic-stage/<idx>.
+    * No ZFS stages → spawn restic directly.
+    * With stages → wrap in `unshare -m` + bind mounts so that restic records
+      the ORIGINAL mountpoint instead of /tmp/restic-stage/<idx>.
+
+    When `job_id` is given, adds `--json` and streams restic's JSON output:
+      - every "status" message updates /tmp/restic-progress-<jobid>.json
+      - the final "summary" message is persisted with phase="done"
+      - non-JSON lines (plain restic diagnostics) go into the log
     """
-    if not stages:
-        return run_cmd(cmd_args, check=False, env=env)
+    # Build the actual argv: insert --json immediately after 'backup' when
+    # progress tracking is requested.
+    if job_id:
+        argv = list(cmd_args)
+        # Find the 'backup' token and add --json right after it.
+        try:
+            idx = argv.index("backup")
+            argv.insert(idx + 1, "--json")
+        except ValueError:
+            pass  # not a backup cmd — leave as-is
+    else:
+        argv = list(cmd_args)
 
-    script_lines = ["set -e"]
-    for (original, stage) in stages:
-        script_lines.append(f"mkdir -p {shlex.quote(original)}")
-        script_lines.append(
-            f"mount --bind -o ro {shlex.quote(stage)} {shlex.quote(original)}"
+    # Wrap in unshare for ZFS staging, if any.
+    if stages:
+        script_lines = ["set -e"]
+        for (original, stage) in stages:
+            script_lines.append(f"mkdir -p {shlex.quote(original)}")
+            script_lines.append(
+                f"mount --bind -o ro {shlex.quote(stage)} {shlex.quote(original)}"
+            )
+        quoted_restic = " ".join(shlex.quote(a) for a in argv)
+        script_lines.append(f"exec {quoted_restic}")
+        proc_argv = ["unshare", "-m", "--propagation", "private",
+                     "bash", "-c", "\n".join(script_lines)]
+    else:
+        proc_argv = argv
+
+    if not job_id:
+        # Legacy code path: no progress streaming.
+        return run_cmd(proc_argv, check=False, env=env)
+
+    # Streaming path: spawn Popen, parse JSON line by line.
+    prog_path = _progress_path(job_id)
+    started   = time.time()
+    last_flush = 0.0
+    last_status = None
+    summary    = None
+    stderr_tail = []
+
+    _write_progress_atomic(prog_path, {
+        "phase":       "starting",
+        "target":      target_name,
+        "started_at":  started,
+        "updated_at":  time.time(),
+    })
+
+    try:
+        proc = subprocess.Popen(
+            proc_argv, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1,
         )
-    quoted_restic = " ".join(shlex.quote(a) for a in cmd_args)
-    script_lines.append(f"exec {quoted_restic}")
-    script = "\n".join(script_lines)
+    except FileNotFoundError as e:
+        return str(e)
 
-    wrapped = [
-        "unshare", "-m", "--propagation", "private",
-        "bash", "-c", script,
-    ]
-    return run_cmd(wrapped, check=False, env=env)
+    # Drain stderr in a background thread so it doesn't block on a full pipe.
+    import threading
+    def _drain_stderr():
+        try:
+            for line in proc.stderr:
+                line = line.rstrip("\n")
+                if line:
+                    stderr_tail.append(line)
+                    if len(stderr_tail) > 200:
+                        del stderr_tail[:len(stderr_tail)-200]
+                    logger.log("WARN", f"  restic: {line}")
+        except Exception:
+            pass
+    t_err = threading.Thread(target=_drain_stderr, daemon=True)
+    t_err.start()
+
+    try:
+        for raw in proc.stdout:
+            raw = raw.rstrip("\n")
+            if not raw:
+                continue
+            # Fast reject non-JSON lines
+            if raw[0] != "{":
+                logger.log("INFO", f"  {raw}")
+                continue
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.log("INFO", f"  {raw}")
+                continue
+            mt = msg.get("message_type", "")
+            if mt == "status":
+                last_status = msg
+                # Throttle file writes to once per second
+                now = time.time()
+                if now - last_flush >= 1.0:
+                    _write_progress_atomic(prog_path, {
+                        "phase":         "backup",
+                        "target":        target_name,
+                        "started_at":    started,
+                        "updated_at":    now,
+                        "percent_done":  msg.get("percent_done"),
+                        "bytes_done":    msg.get("bytes_done"),
+                        "total_bytes":   msg.get("total_bytes"),
+                        "files_done":    msg.get("files_done"),
+                        "total_files":   msg.get("total_files"),
+                        "current_files": msg.get("current_files", [])[:3],
+                        "seconds_elapsed":  msg.get("seconds_elapsed"),
+                        "seconds_remaining":msg.get("seconds_remaining"),
+                    })
+                    last_flush = now
+            elif mt == "summary":
+                summary = msg
+                logger.log("INFO",
+                    "  Added:  {} files ({}), {} dirs".format(
+                        msg.get("files_new", 0),
+                        _fmt_bytes(msg.get("data_added", 0)),
+                        msg.get("dirs_new", 0),
+                    )
+                )
+                if msg.get("files_changed"):
+                    logger.log("INFO", f"  Changed: {msg['files_changed']} files")
+                if msg.get("total_files_processed") is not None:
+                    logger.log("INFO",
+                        "  Total:  {} files ({})".format(
+                            msg["total_files_processed"],
+                            _fmt_bytes(msg.get("total_bytes_processed", 0)),
+                        )
+                    )
+            elif mt == "error":
+                logger.log("ERROR", f"  restic error: {msg.get('error', msg)}")
+            # ignore verbose_status and other noise
+    except Exception as e:
+        logger.log("ERROR", f"  progress stream error: {e}")
+
+    rc = proc.wait()
+    t_err.join(timeout=2)
+
+    # Final progress snapshot
+    _write_progress_atomic(prog_path, {
+        "phase":        "done",
+        "target":       target_name,
+        "started_at":   started,
+        "updated_at":   time.time(),
+        "rc":           rc,
+        "summary":      summary or last_status,
+    })
+
+    if rc == 0:
+        return True
+    err = "\n".join(stderr_tail[-20:]) if stderr_tail else f"Exit code {rc}"
+    return err
+
+def _fmt_bytes(n):
+    """Format bytes with binary units (matches restic's own formatting style)."""
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        return str(n)
+    for u in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024:
+            return f"{n:.1f} {u}" if u != "B" else f"{n} {u}"
+        n /= 1024
+    return f"{n:.1f} PiB"
 
 def cleanup_global():
     """Clear anything left over from a previous run — stage mounts + snapshots."""
@@ -651,7 +897,8 @@ def run_job(config, job):
             t_repo = time.time()
 
             sftp_opts = get_sftp_opts(target)
-            cmd_head = ["restic", "-r", url] + sftp_opts + ["backup"]
+            lim_opts  = get_limit_opts(target)
+            cmd_head = ["restic", "-r", url] + sftp_opts + lim_opts + ["backup"]
             if tags:
                 cmd_head.extend(["--tag", tags])
             if hostname:
@@ -675,7 +922,10 @@ def run_job(config, job):
             t_up = time.time()
             ok = False
             for attempt in range(1, max_retries + 1):
-                result = run_backup_attempt(cmd, target_env, stages)
+                result = run_backup_attempt(
+                    cmd, target_env, stages,
+                    job_id=job_id, target_name=name,
+                )
                 if result is True:
                     ok = True
                     break
@@ -691,7 +941,7 @@ def run_job(config, job):
                 logger.info(f"  Upload done ({up_dur})")
 
                 # Retention / Prune — restricted to this job's tag when set
-                prune_cmd = ["restic", "-r", url] + sftp_opts + ["forget", "--prune"]
+                prune_cmd = ["restic", "-r", url] + sftp_opts + lim_opts + ["forget", "--prune"]
                 if tags:
                     # Use the first tag as the isolation key for forget so that
                     # multiple jobs sharing one repository don't prune each other.
@@ -711,7 +961,7 @@ def run_job(config, job):
                 run_cmd(prune_cmd, check=False, env=target_env)
 
                 # Stats
-                stats = run_cmd(["restic", "-r", url] + sftp_opts + ["stats", "latest",
+                stats = run_cmd(["restic", "-r", url] + sftp_opts + lim_opts + ["stats", "latest",
                                  "--mode", "restore-size"], check=False, capture_output=True, env=target_env)
                 if stats and isinstance(stats, str):
                     for line in stats.splitlines():
@@ -732,12 +982,29 @@ def run_job(config, job):
                 if should_check:
                     pct = check_conf.get("percentage", "2%")
                     logger.info(f"  Integrity check ({pct})...")
-                    cr = run_cmd(["restic", "-r", url] + sftp_opts + ["check", f"--read-data-subset={pct}"], check=False, env=target_env)
+                    cr = run_cmd(["restic", "-r", url] + sftp_opts + lim_opts + ["check", f"--read-data-subset={pct}"], check=False, env=target_env)
                     if cr is True:
                         logger.info("  Check passed")
                     else:
                         logger.warn(f"  Check issues: {cr}")
                         logger.notify("Restic Backup", f"Check issues on {name}", "warning")
+
+                # Restore verification — restore one file, byte-compare with source
+                v = job.get("verify", {}) or {}
+                if v.get("enabled", False):
+                    vpath = (v.get("path") or "").strip()
+                    if vpath and os.path.isabs(vpath):
+                        logger.info(f"  Verify: restoring and comparing {vpath}")
+                        vr = verify_restore(url, sftp_opts, lim_opts, target_env, vpath)
+                        if vr is True:
+                            logger.info("  Verify OK (restored file matches source)")
+                        else:
+                            logger.error(f"  Verify FAILED: {vr}")
+                            logger.notify("Restic Backup",
+                                          f"{job_name}/{name}: restore verification FAILED ({vr})",
+                                          "alert")
+                    else:
+                        logger.warn("  Verify enabled but no valid absolute path configured — skipping")
 
                 logger.info(f"  Target done ({fmt(time.time() - t_repo)})")
                 logger.notify("Restic Backup", f"{job_name}/{name} OK ({up_dur})", "normal")
@@ -775,6 +1042,16 @@ def run_job(config, job):
         })
 
     logger.info(f"=== Job {job_name} done ({fmt(time.time() - t_job)}) ===")
+    # Clear the progress file so the UI shows "idle" again (keep it briefly
+    # with phase=done so clients can read the final summary).
+    pp = _progress_path(job.get("id"))
+    if pp:
+        _write_progress_atomic(pp, {
+            "phase":      "idle",
+            "updated_at": time.time(),
+            "ok":         success,
+            "fail":       fail,
+        })
     logger.set_job(None)
     return success, fail
 

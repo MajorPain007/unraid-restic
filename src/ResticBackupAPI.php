@@ -13,7 +13,10 @@
 while (ob_get_level() > 0) ob_end_clean();
 
 set_error_handler(function(int $errno, string $errstr): bool {
-    if (error_reporting() === 0) return true; // suppressed with @
+    // PHP 8+: @ no longer sets error_reporting() to 0 — it masks specific
+    // bits instead. The portable check is to test whether this errno is
+    // currently enabled in the effective mask.
+    if (!(error_reporting() & $errno)) return true; // suppressed with @
     echo json_encode(['status' => 'error', 'message' => "PHP[$errno]: $errstr"]);
     exit(1);
 });
@@ -95,6 +98,20 @@ function restic_sftp_args(string $type, array $creds): array {
         return ['-o', 'sftp.args=-o StrictHostKeyChecking=accept-new'];
     }
     return [];
+}
+
+/**
+ * Return bandwidth limit flags (--limit-upload / --limit-download, KiB/s).
+ * Restic treats these as global flags, so they go between `restic` and the
+ * subcommand. 0 / unset = unlimited and emits no flag.
+ */
+function restic_limit_args(array $target): array {
+    $args = [];
+    $up   = (int)($target['limit_upload']   ?? 0);
+    $down = (int)($target['limit_download'] ?? 0);
+    if ($up   > 0) { $args[] = '--limit-upload';   $args[] = (string)$up; }
+    if ($down > 0) { $args[] = '--limit-download'; $args[] = (string)$down; }
+    return $args;
 }
 
 /**
@@ -388,8 +405,10 @@ switch ($action) {
 
         $env_str  = restic_build_env_str($tc['env']);
         $sfx      = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $lim      = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
         $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '')
+             . ($lim ? " $lim" : '')
              . " snapshots --json 2>&1";
 
         $output = [];
@@ -439,6 +458,7 @@ switch ($action) {
 
         $env_str = restic_build_env_str($tc['env']);
         $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
         $flags   = ['--json'];
         if ($ignore_case)          { $flags[] = '-i'; }
         if ($snap_id !== '')       { $flags[] = '--snapshot ' . escapeshellarg($snap_id); }
@@ -446,6 +466,7 @@ switch ($action) {
 
         $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '')
+             . ($lim ? " $lim" : '')
              . ' find ' . implode(' ', $flags)
              . ' ' . escapeshellarg($pattern)
              . ' 2>&1';
@@ -492,6 +513,7 @@ switch ($action) {
 
         $env_str = restic_build_env_str($tc['env']);
         $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
         $safe_id    = preg_replace('/[^a-f0-9]/', '', strtolower($snapshot_id));
         $cache_file = "/tmp/restic-ls-{$safe_id}.json";
         $cache_ttl  = 300;
@@ -502,6 +524,7 @@ switch ($action) {
             $err_file = $cache_file . '.err';
             $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
                  . ($sfx ? " $sfx" : '')
+                 . ($lim ? " $lim" : '')
                  . " ls --json " . escapeshellarg($snapshot_id)
                  . " > " . escapeshellarg($tmp_file)
                  . " 2> " . escapeshellarg($err_file);
@@ -575,6 +598,7 @@ switch ($action) {
 
         $env_str = restic_build_env_str($tc['env']);
         $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
 
         // Cache the full snapshot listing in /tmp keyed by snapshot ID.
         // This avoids relying on restic ls path-argument behaviour (which varies
@@ -592,6 +616,7 @@ switch ($action) {
             $err_file = $cache_file . '.err';
             $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
                  . ($sfx ? " $sfx" : '')
+                 . ($lim ? " $lim" : '')
                  . " ls --json " . escapeshellarg($snapshot_id)
                  . " > " . escapeshellarg($tmp_file)
                  . " 2> " . escapeshellarg($err_file);
@@ -678,6 +703,7 @@ switch ($action) {
 
         $env_str = restic_build_env_str($tc['env']);
         $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
         $logfile = RESTIC_LOG_DIR . '/restic-restore-' . date('Ymd-His') . '.log';
 
         // Sanitise include paths
@@ -710,6 +736,7 @@ switch ($action) {
 
         $restic_cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '')
+             . ($lim ? " $lim" : '')
              . " restore " . escapeshellarg($snapshot_id)
              . $include_flags;
 
@@ -741,6 +768,459 @@ switch ($action) {
             'logfile' => $logfile,
         ]);
         break;
+
+    // =========================================================================
+    // UNLOCK — remove stale locks from a repository
+    // =========================================================================
+    case 'repo_unlock': {
+        $job_id    = $data['job_id']    ?? '';
+        $target_id = $data['target_id'] ?? '';
+        $remove_all = !empty($data['remove_all']);
+
+        $tc = restic_get_target_config($job_id, $target_id);
+        if (!$tc) {
+            echo json_encode(['status' => 'error', 'message' => 'Job or target not found']);
+            break;
+        }
+        $env_str = restic_build_env_str($tc['env']);
+        $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
+        $flag    = $remove_all ? ' --remove-all' : '';
+        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+             . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
+             . " unlock{$flag} 2>&1";
+        $output = []; exec($cmd, $output, $ret);
+        $text = trim(implode("\n", $output));
+        echo json_encode([
+            'status'  => $ret === 0 ? 'success' : 'error',
+            'message' => $text !== '' ? $text : ($ret === 0 ? 'Locks removed.' : 'unlock failed'),
+        ]);
+        break;
+    }
+
+    // =========================================================================
+    // STATS — repository statistics (raw-data / restore-size / files-by-contents)
+    // =========================================================================
+    case 'repo_stats': {
+        $job_id    = $data['job_id']    ?? '';
+        $target_id = $data['target_id'] ?? '';
+        $mode      = $data['mode']      ?? 'raw-data';
+
+        $allowed = ['raw-data', 'restore-size', 'files-by-contents', 'blobs-per-file'];
+        if (!in_array($mode, $allowed, true)) $mode = 'raw-data';
+
+        $tc = restic_get_target_config($job_id, $target_id);
+        if (!$tc) {
+            echo json_encode(['status' => 'error', 'message' => 'Job or target not found']);
+            break;
+        }
+        $env_str = restic_build_env_str($tc['env']);
+        $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
+        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+             . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
+             . ' stats --mode ' . escapeshellarg($mode) . ' --json 2>&1';
+        $output = []; exec($cmd, $output, $ret);
+        $text = implode("\n", $output);
+        $parsed = json_decode($text, true);
+        if ($ret === 0 && is_array($parsed)) {
+            echo json_encode([
+                'status' => 'success',
+                'mode'   => $mode,
+                'stats'  => $parsed,
+            ]);
+        } else {
+            echo json_encode([
+                'status'  => 'error',
+                'message' => trim($text) ?: "restic stats failed (exit {$ret})",
+            ]);
+        }
+        break;
+    }
+
+    // =========================================================================
+    // RECOVER — scan the repo for orphaned pack files and rebuild index
+    // =========================================================================
+    case 'repo_recover': {
+        $job_id    = $data['job_id']    ?? '';
+        $target_id = $data['target_id'] ?? '';
+
+        $tc = restic_get_target_config($job_id, $target_id);
+        if (!$tc) {
+            echo json_encode(['status' => 'error', 'message' => 'Job or target not found']);
+            break;
+        }
+        $env_str = restic_build_env_str($tc['env']);
+        $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
+        $logfile = RESTIC_LOG_DIR . '/restic-recover-' . date('Ymd-His') . '.log';
+
+        // recover can take a while; run in background and stream to a log file.
+        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+             . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
+             . ' recover >> ' . escapeshellarg($logfile) . ' 2>&1';
+        exec('nohup bash -c ' . escapeshellarg($cmd) . ' &');
+        echo json_encode([
+            'status'  => 'started',
+            'message' => 'Recover started — see log for details.',
+            'logfile' => $logfile,
+        ]);
+        break;
+    }
+
+    // =========================================================================
+    // REPO CHECK — full integrity check (on-demand, background)
+    // =========================================================================
+    case 'repo_check': {
+        $job_id      = $data['job_id']    ?? '';
+        $target_id   = $data['target_id'] ?? '';
+        $read_data   = !empty($data['read_data']);
+        $subset      = trim((string)($data['subset'] ?? '')); // e.g. "5%" or "2G"
+
+        $tc = restic_get_target_config($job_id, $target_id);
+        if (!$tc) {
+            echo json_encode(['status' => 'error', 'message' => 'Job or target not found']);
+            break;
+        }
+        $env_str = restic_build_env_str($tc['env']);
+        $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
+        $extra   = '';
+        if ($subset !== '')      { $extra .= ' --read-data-subset=' . escapeshellarg($subset); }
+        elseif ($read_data)      { $extra .= ' --read-data'; }
+        $logfile = RESTIC_LOG_DIR . '/restic-check-' . date('Ymd-His') . '.log';
+        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+             . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
+             . ' check' . $extra . ' >> ' . escapeshellarg($logfile) . ' 2>&1';
+        exec('nohup bash -c ' . escapeshellarg($cmd) . ' &');
+        echo json_encode([
+            'status'  => 'started',
+            'message' => 'Integrity check started — see log for details.',
+            'logfile' => $logfile,
+        ]);
+        break;
+    }
+
+    // =========================================================================
+    // RESTIC SELF-UPDATE — binary in-place upgrade (preserves perms)
+    // =========================================================================
+    case 'restic_self_update': {
+        $cmd = '/usr/local/bin/restic self-update 2>&1';
+        $output = []; exec($cmd, $output, $ret);
+        $text = trim(implode("\n", $output));
+        // Grab version after update
+        $ver = shell_exec('/usr/local/bin/restic version 2>&1');
+        echo json_encode([
+            'status'  => $ret === 0 ? 'success' : 'error',
+            'message' => $text,
+            'version' => trim((string)$ver),
+        ]);
+        break;
+    }
+
+    // =========================================================================
+    // SNAPSHOT DIFF — diff between two snapshots
+    // =========================================================================
+    case 'snapshot_diff': {
+        $job_id    = $data['job_id']    ?? '';
+        $target_id = $data['target_id'] ?? '';
+        $snap_a    = $data['snapshot_a'] ?? '';
+        $snap_b    = $data['snapshot_b'] ?? '';
+
+        if (!$snap_a || !$snap_b) {
+            echo json_encode(['status' => 'error', 'message' => 'Two snapshot IDs required']);
+            break;
+        }
+
+        $tc = restic_get_target_config($job_id, $target_id);
+        if (!$tc) {
+            echo json_encode(['status' => 'error', 'message' => 'Job or target not found']);
+            break;
+        }
+        $env_str = restic_build_env_str($tc['env']);
+        $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
+        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+             . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
+             . ' diff --json '
+             . escapeshellarg($snap_a) . ' ' . escapeshellarg($snap_b)
+             . ' 2>&1';
+        $output = []; exec($cmd, $output, $ret);
+        $text = implode("\n", $output);
+
+        // restic diff --json emits one JSON object per line (NDJSON).
+        $changes = [];
+        $summary = null;
+        foreach (explode("\n", $text) as $ln) {
+            $ln = trim($ln);
+            if ($ln === '') continue;
+            $obj = json_decode($ln, true);
+            if (!is_array($obj)) continue;
+            if (($obj['message_type'] ?? '') === 'statistics') {
+                $summary = $obj;
+            } else {
+                $changes[] = $obj;
+            }
+        }
+        if ($ret !== 0 && !$changes && !$summary) {
+            echo json_encode(['status' => 'error', 'message' => trim($text) ?: 'diff failed']);
+            break;
+        }
+        echo json_encode([
+            'status'  => 'success',
+            'changes' => $changes,
+            'summary' => $summary,
+        ]);
+        break;
+    }
+
+    // =========================================================================
+    // SNAPSHOT TAG — add/remove/set tags on one or more snapshots
+    // =========================================================================
+    case 'snapshot_tag': {
+        $job_id       = $data['job_id']    ?? '';
+        $target_id    = $data['target_id'] ?? '';
+        $snapshot_ids = $data['snapshot_ids'] ?? [];
+        if (!is_array($snapshot_ids)) $snapshot_ids = [$snapshot_ids];
+        $op   = $data['op']   ?? 'add';        // add | remove | set
+        $tags = trim((string)($data['tags'] ?? ''));
+
+        if (empty($snapshot_ids)) {
+            echo json_encode(['status' => 'error', 'message' => 'No snapshots selected']);
+            break;
+        }
+        if (!in_array($op, ['add', 'remove', 'set'], true)) {
+            echo json_encode(['status' => 'error', 'message' => 'Invalid tag op']);
+            break;
+        }
+        $tc = restic_get_target_config($job_id, $target_id);
+        if (!$tc) {
+            echo json_encode(['status' => 'error', 'message' => 'Job or target not found']);
+            break;
+        }
+        $env_str = restic_build_env_str($tc['env']);
+        $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
+
+        // Build flag: --add/--remove/--set, each takes a comma-separated value.
+        $flag = '--add';
+        if ($op === 'remove') $flag = '--remove';
+        if ($op === 'set')    $flag = '--set';
+
+        $ids = [];
+        foreach ($snapshot_ids as $sid) {
+            $clean = preg_replace('/[^a-fA-F0-9]/', '', (string)$sid);
+            if ($clean !== '') $ids[] = $clean;
+        }
+        if (!$ids) {
+            echo json_encode(['status' => 'error', 'message' => 'No valid snapshot IDs']);
+            break;
+        }
+        $ids_str = implode(' ', array_map('escapeshellarg', $ids));
+
+        // For set/add with empty tags, restic still accepts empty value (clears); same for remove.
+        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+             . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
+             . " tag {$flag} " . escapeshellarg($tags)
+             . ' ' . $ids_str . ' 2>&1';
+        $output = []; exec($cmd, $output, $ret);
+        $text = trim(implode("\n", $output));
+        echo json_encode([
+            'status'  => $ret === 0 ? 'success' : 'error',
+            'message' => $text !== '' ? $text : ($ret === 0 ? 'Tags updated.' : 'tag failed'),
+        ]);
+        break;
+    }
+
+    // =========================================================================
+    // SNAPSHOT FORGET — delete individual snapshot(s)
+    // =========================================================================
+    case 'snapshot_forget': {
+        $job_id       = $data['job_id']    ?? '';
+        $target_id    = $data['target_id'] ?? '';
+        $snapshot_ids = $data['snapshot_ids'] ?? [];
+        if (!is_array($snapshot_ids)) $snapshot_ids = [$snapshot_ids];
+        $prune        = !empty($data['prune']);
+
+        if (empty($snapshot_ids)) {
+            echo json_encode(['status' => 'error', 'message' => 'No snapshots selected']);
+            break;
+        }
+        $tc = restic_get_target_config($job_id, $target_id);
+        if (!$tc) {
+            echo json_encode(['status' => 'error', 'message' => 'Job or target not found']);
+            break;
+        }
+        $env_str = restic_build_env_str($tc['env']);
+        $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
+
+        $ids = [];
+        foreach ($snapshot_ids as $sid) {
+            $clean = preg_replace('/[^a-fA-F0-9]/', '', (string)$sid);
+            if ($clean !== '') $ids[] = $clean;
+        }
+        if (!$ids) {
+            echo json_encode(['status' => 'error', 'message' => 'No valid snapshot IDs']);
+            break;
+        }
+        $ids_str = implode(' ', array_map('escapeshellarg', $ids));
+        $flag    = $prune ? ' --prune' : '';
+        $logfile = RESTIC_LOG_DIR . '/restic-forget-' . date('Ymd-His') . '.log';
+        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+             . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
+             . " forget{$flag} {$ids_str} >> " . escapeshellarg($logfile) . ' 2>&1';
+        exec('nohup bash -c ' . escapeshellarg($cmd) . ' &');
+        echo json_encode([
+            'status'  => 'started',
+            'message' => 'forget' . ($prune ? ' --prune' : '') . ' started in background',
+            'logfile' => $logfile,
+        ]);
+        break;
+    }
+
+    // =========================================================================
+    // JOB PROGRESS — read the latest /tmp/restic-progress-<jobid>.json
+    // =========================================================================
+    case 'job_progress': {
+        $job_id = $data['job_id'] ?? '';
+        if ($job_id === '') {
+            echo json_encode(['status' => 'error', 'message' => 'Missing job_id']);
+            break;
+        }
+        $safe = preg_replace('/[^A-Za-z0-9_-]/', '_', $job_id);
+        $path = "/tmp/restic-progress-{$safe}.json";
+        if (!is_file($path)) {
+            echo json_encode(['status' => 'success', 'progress' => null]);
+            break;
+        }
+        $body = @file_get_contents($path);
+        $p    = $body !== false ? json_decode($body, true) : null;
+        echo json_encode(['status' => 'success', 'progress' => is_array($p) ? $p : null]);
+        break;
+    }
+
+    // =========================================================================
+    // SNAPSHOT REWRITE — exclude paths from existing snapshot(s)
+    // =========================================================================
+    case 'snapshot_rewrite': {
+        $job_id       = $data['job_id']       ?? '';
+        $target_id    = $data['target_id']    ?? '';
+        $snapshot_ids = $data['snapshot_ids'] ?? [];
+        if (!is_array($snapshot_ids)) $snapshot_ids = [$snapshot_ids];
+        $excludes     = $data['excludes']     ?? [];
+        if (!is_array($excludes)) $excludes = [$excludes];
+        $forget       = !empty($data['forget']); // forget old snapshots after rewrite
+
+        if (empty($snapshot_ids)) {
+            echo json_encode(['status' => 'error', 'message' => 'No snapshots selected']);
+            break;
+        }
+        if (empty($excludes)) {
+            echo json_encode(['status' => 'error', 'message' => 'At least one exclude path is required']);
+            break;
+        }
+        $tc = restic_get_target_config($job_id, $target_id);
+        if (!$tc) {
+            echo json_encode(['status' => 'error', 'message' => 'Job or target not found']);
+            break;
+        }
+        $env_str = restic_build_env_str($tc['env']);
+        $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
+
+        $ids = [];
+        foreach ($snapshot_ids as $sid) {
+            $clean = preg_replace('/[^a-fA-F0-9]/', '', (string)$sid);
+            if ($clean !== '') $ids[] = $clean;
+        }
+        if (!$ids) {
+            echo json_encode(['status' => 'error', 'message' => 'No valid snapshot IDs']);
+            break;
+        }
+
+        $ex_flags = '';
+        foreach ($excludes as $ex) {
+            $ex = trim((string)$ex);
+            if ($ex !== '') $ex_flags .= ' --exclude ' . escapeshellarg($ex);
+        }
+
+        $ids_str = implode(' ', array_map('escapeshellarg', $ids));
+        $forget_flag = $forget ? ' --forget' : '';
+        $logfile = RESTIC_LOG_DIR . '/restic-rewrite-' . date('Ymd-His') . '.log';
+        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+             . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
+             . " rewrite{$forget_flag}{$ex_flags} {$ids_str} >> "
+             . escapeshellarg($logfile) . ' 2>&1';
+        exec('nohup bash -c ' . escapeshellarg($cmd) . ' &');
+        echo json_encode([
+            'status'  => 'started',
+            'message' => 'rewrite started in background',
+            'logfile' => $logfile,
+        ]);
+        break;
+    }
+
+    // =========================================================================
+    // SNAPSHOT COPY — copy snapshots to another target within the same job
+    // =========================================================================
+    case 'snapshot_copy': {
+        $job_id        = $data['job_id']         ?? '';
+        $src_target_id = $data['src_target_id']  ?? '';
+        $dst_target_id = $data['dst_target_id']  ?? '';
+        $snapshot_ids  = $data['snapshot_ids']   ?? [];
+        if (!is_array($snapshot_ids)) $snapshot_ids = [$snapshot_ids];
+
+        if ($src_target_id === $dst_target_id) {
+            echo json_encode(['status' => 'error', 'message' => 'Source and destination must differ']);
+            break;
+        }
+
+        $src = restic_get_target_config($job_id, $src_target_id);
+        $dst = restic_get_target_config($job_id, $dst_target_id);
+        if (!$src || !$dst) {
+            echo json_encode(['status' => 'error', 'message' => 'Source or destination not found']);
+            break;
+        }
+
+        // For `restic copy`, the destination repository URL/password go via the
+        // --repo2 flag and RESTIC_PASSWORD2/RESTIC_PASSWORD_FILE2 env vars.
+        // Source creds (S3/B2/password) go through the normal env.
+        $env_pairs = $src['env'];
+        foreach (($dst['env'] ?? []) as $k => $v) {
+            // Rename RESTIC_PASSWORD/FILE → RESTIC_PASSWORD2/FILE2 so both
+            // repos can coexist. Other vars (S3/B2) would collide — in which
+            // case the user needs the same credentials on both sides.
+            if     ($k === 'RESTIC_PASSWORD')      $env_pairs['RESTIC_PASSWORD2']      = $v;
+            elseif ($k === 'RESTIC_PASSWORD_FILE') $env_pairs['RESTIC_PASSWORD_FILE2'] = $v;
+            elseif (!isset($env_pairs[$k]))         $env_pairs[$k]                     = $v;
+        }
+        $env_str = restic_build_env_str($env_pairs);
+        $sfx     = implode(' ', array_map('escapeshellarg', $src['sftp_args']));
+        $lim     = implode(' ', array_map('escapeshellarg', $src['limit_args'] ?? []));
+
+        $ids = [];
+        foreach ($snapshot_ids as $sid) {
+            $clean = preg_replace('/[^a-fA-F0-9]/', '', (string)$sid);
+            if ($clean !== '') $ids[] = $clean;
+        }
+        // Empty = copy ALL snapshots
+        $ids_str = $ids ? (' ' . implode(' ', array_map('escapeshellarg', $ids))) : '';
+
+        $logfile = RESTIC_LOG_DIR . '/restic-copy-' . date('Ymd-His') . '.log';
+        $cmd = "{$env_str} restic -r " . escapeshellarg($src['url'])
+             . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
+             . ' --repo2 ' . escapeshellarg($dst['url'])
+             . ' copy' . $ids_str
+             . ' >> ' . escapeshellarg($logfile) . ' 2>&1';
+        exec('nohup bash -c ' . escapeshellarg($cmd) . ' &');
+        echo json_encode([
+            'status'  => 'started',
+            'message' => 'copy started in background' . ($ids ? '' : ' (all snapshots)'),
+            'logfile' => $logfile,
+        ]);
+        break;
+    }
 
     // =========================================================================
     // DEFAULT

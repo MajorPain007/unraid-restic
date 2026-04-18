@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "restic-backup">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.04.18.03">
-<!ENTITY md5       "ab476396dffbb0bdb4ce0bde5e129ee4">
+<!ENTITY version   "2026.04.18.04">
+<!ENTITY md5       "fea7d359dd89b98518121a733f3034d2">
 <!ENTITY launch    "Settings/ResticBackup">
 <!ENTITY github    "MajorPain007/unraid-restic">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/src/&name;.plg">
@@ -13,6 +13,7 @@
 <!ENTITY tmpDir    "/tmp/&name;">
 <!ENTITY resticVer "0.17.3">
 <!ENTITY resticURL "https://github.com/restic/restic/releases/download/v&resticVer;/restic_&resticVer;_linux_amd64.bz2">
+<!ENTITY resticSumsURL "https://github.com/restic/restic/releases/download/v&resticVer;/SHA256SUMS">
 ]>
 
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;"
@@ -21,6 +22,65 @@
         icon="shield">
 
 <CHANGES>
+## Version 2026.04.18.04
+- Bandwidth Limits per Target: each target now has optional upload and
+  download rate caps (KiB/s). The limits are passed to restic as
+  `--limit-upload` / `--limit-download` on every operation that talks to
+  that target (backup, prune, snapshots, find, ls, restore, stats, check,
+  diff, tag, forget, rewrite, copy). Leave blank for unlimited.
+- Repository Tools: new "Repository Tools" panel below the snapshot
+  browser exposes maintenance actions that previously required SSH:
+  * **Unlock** — remove stale locks left by a crashed or killed restic
+    process.
+  * **Stats** — repository size, snapshot count, deduplicated size,
+    per-blob stats.
+  * **Check** — integrity check of pack files and indexes.
+  * **Recover** — rebuild index from pack files after corruption or a
+    missing index.
+  * **Restic Self-Update** — update the bundled restic binary in place,
+    with SHA256 verification against the upstream `SHA256SUMS` file.
+- Snapshot Operations: multi-select checkboxes in the snapshot browser
+  unlock bulk actions directly from the WebUI:
+  * **Diff** — compare two selected snapshots, showing added / modified
+    / removed paths.
+  * **Tag** — add or remove tags on one or more snapshots.
+  * **Forget** — delete selected snapshots (prompts for confirmation).
+  * **Rewrite** — re-write selected snapshots, e.g. to exclude paths
+    that should never have been backed up.
+  * **Copy** — copy selected snapshots to another target repository
+    (uses `--repo2` + `RESTIC_PASSWORD2`, with automatic env renaming
+    for SFTP/S3/B2/etc. credentials).
+- Live Backup Progress: the Status and Control panel now shows a live
+  progress bar during a running backup. The Python runner streams
+  restic's `--json` progress output and writes throttled snapshots to
+  `/tmp/restic-progress-[jobid].json`. The UI polls that file and
+  renders target name, bytes / files done vs. total, percent complete,
+  current file, and ETA.
+- Restore Verification: a new per-job "Restore Verify" option picks a
+  single file that must round-trip cleanly after every backup. After
+  a successful upload, the runner hashes the live source with SHA256,
+  restores the same path from the `latest` snapshot into a tmpdir,
+  hashes the restored copy, and compares. A mismatch marks the target
+  as failed so you notice silent corruption immediately.
+- Safety hardening:
+  * Hooks, job configs, and target credentials are now written via
+    atomic tmp+rename+fsync with `chmod 0600` to prevent partial
+    writes and leaking of repo passwords / SFTP keys.
+  * All hook wrapper scripts run with `set -eo pipefail` so a failed
+    command inside a pipeline propagates instead of silently
+    succeeding.
+  * `restic` binary downloads are verified against the upstream
+    `SHA256SUMS` file published by the restic project.
+- Bug fixes:
+  * First-time hook save no longer emits
+    `file_get_contents(...): Failed to open stream: No such file or
+    directory` — the writer now checks for existence before reading.
+  * PHP 8+ `@` suppression operator: the custom error handler used to
+    compare `error_reporting() === 0`, which is no longer accurate
+    under PHP 8 where `@` leaves `error_reporting()` unchanged but
+    sets a specific bit. Changed to a bitmask check so `@`-suppressed
+    warnings are properly silenced across the codebase.
+
 ## Version 2026.04.18.03
 - Pre/Post-Backup Hooks: new job section for shell commands that run around
   the backup.
@@ -122,9 +182,13 @@ mkdir -p &tmpDir;
 </INLINE>
 </FILE>
 
-<!-- Download restic binary -->
+<!-- Download restic binary + its signed checksum list -->
 <FILE Name="/tmp/restic.bz2">
 <URL>&resticURL;</URL>
+</FILE>
+
+<FILE Name="/tmp/restic.SHA256SUMS">
+<URL>&resticSumsURL;</URL>
 </FILE>
 
 <!-- Install plugin package -->
@@ -140,17 +204,42 @@ rm -f $(ls &configDir;/&name;-*.txz 2>/dev/null | grep -v '&version;')
 </INLINE>
 </FILE>
 
-<!-- Install restic binary -->
+<!-- Install restic binary (with SHA256 verification against upstream) -->
 <FILE Run="/bin/bash">
 <INLINE>
-if [ -f /tmp/restic.bz2 ]; then
-    bunzip2 -f /tmp/restic.bz2
-    mv /tmp/restic /usr/local/bin/restic
-    chmod 755 /usr/local/bin/restic
-    echo "Restic installed: $(restic version 2>/dev/null || echo 'unknown')"
-else
+set -e
+if [ ! -f /tmp/restic.bz2 ]; then
     echo "WARNING: restic binary not found at /tmp/restic.bz2"
+    exit 1
 fi
+
+# Verify the downloaded .bz2 against the SHA256SUMS list published with
+# the restic release. Aborts the install if the hash does not match.
+FNAME="restic_&resticVer;_linux_amd64.bz2"
+if [ -f /tmp/restic.SHA256SUMS ]; then
+    EXPECTED=$(awk -v f="$FNAME" '$2==f {print $1}' /tmp/restic.SHA256SUMS)
+    if [ -n "$EXPECTED" ]; then
+        ACTUAL=$(sha256sum /tmp/restic.bz2 | awk '{print $1}')
+        if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "ERROR: restic SHA256 mismatch!"
+            echo "  expected: $EXPECTED"
+            echo "  actual  : $ACTUAL"
+            rm -f /tmp/restic.bz2 /tmp/restic.SHA256SUMS
+            exit 1
+        fi
+        echo "restic SHA256 verified: $ACTUAL"
+    else
+        echo "WARNING: $FNAME not present in SHA256SUMS — cannot verify"
+    fi
+else
+    echo "WARNING: SHA256SUMS file missing — cannot verify restic download"
+fi
+
+bunzip2 -f /tmp/restic.bz2
+mv /tmp/restic /usr/local/bin/restic
+chmod 755 /usr/local/bin/restic
+rm -f /tmp/restic.SHA256SUMS
+echo "Restic installed: $(restic version 2>/dev/null || echo 'unknown')"
 </INLINE>
 </FILE>
 

@@ -344,6 +344,16 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                                     <input type="text" class="target-name" value="<?= htmlspecialchars($t['name'] ?? '') ?>" placeholder="e.g. Hetzner Cloud">
                                 </div>
                                 <div class="rb-row">
+                                    <label>Upload Limit (KiB/s):</label>
+                                    <input type="number" class="target-limit-up" value="<?= (int)($t['limit_upload'] ?? 0) ?>" min="0" placeholder="0 = unlimited" style="max-width:140px;">
+                                    <span class="rb-hint">0 = unlimited</span>
+                                </div>
+                                <div class="rb-row">
+                                    <label>Download Limit (KiB/s):</label>
+                                    <input type="number" class="target-limit-down" value="<?= (int)($t['limit_download'] ?? 0) ?>" min="0" placeholder="0 = unlimited" style="max-width:140px;">
+                                    <span class="rb-hint">0 = unlimited (restores &amp; checks)</span>
+                                </div>
+                                <div class="rb-row">
                                     <label>Optional Excludes:</label>
                                     <select class="target-opt-exc"><option value="0" <?= !($t['use_optional_excludes'] ?? false) ? 'selected' : '' ?>>No</option><option value="1" <?= ($t['use_optional_excludes'] ?? false) ? 'selected' : '' ?>>Yes</option></select>
                                 </div>
@@ -537,6 +547,13 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                         <div class="rb-row"><label>Data Percentage:</label><input type="text" class="chk-pct" value="<?= htmlspecialchars($j['check']['percentage'] ?? '2%') ?>" placeholder="2%" style="max-width:80px;"></div>
                         <div class="rb-row"><label>Check When:</label><select class="chk-sched"><option value="sunday" <?= ($j['check']['schedule'] ?? '') === 'sunday' ? 'selected' : '' ?>>Every Sunday</option><option value="monthly" <?= ($j['check']['schedule'] ?? '') === 'monthly' ? 'selected' : '' ?>>First of Month</option><option value="always" <?= ($j['check']['schedule'] ?? '') === 'always' ? 'selected' : '' ?>>Every Backup</option></select></div>
                         <hr style="border-color:var(--border);margin:10px 0;">
+                        <div class="rb-row"><label>Restore Verify:</label><select class="verify-enabled"><option value="0" <?= !($j['verify']['enabled'] ?? false) ? 'selected' : '' ?>>Disabled</option><option value="1" <?= ($j['verify']['enabled'] ?? false) ? 'selected' : '' ?>>Enabled</option></select></div>
+                        <div class="rb-row">
+                            <label>Verify File:</label>
+                            <input type="text" class="verify-path" value="<?= htmlspecialchars($j['verify']['path'] ?? '') ?>" placeholder="/mnt/user/appdata/<app>/version.txt" data-picktree="file" autocomplete="off" style="flex:1;max-width:420px;">
+                        </div>
+                        <div class="rb-hint">After each successful target backup, restic restores this single file from the newest snapshot and byte-compares it with the live source. Mismatches trigger an alert notification. Pick a small, always-present file inside one of your source paths.</div>
+                        <hr style="border-color:var(--border);margin:10px 0;">
                         <div class="rb-row"><label>Tags:</label><input type="text" class="job-tags" value="<?= htmlspecialchars($j['tags'] ?? '') ?>" placeholder="e.g. unraid,daily"></div>
                         <div class="rb-row"><label>Max Retries:</label><input type="number" class="job-retries" value="<?= (int)($j['max_retries'] ?? 3) ?>" min="1" max="10" style="max-width:70px;"></div>
                         <div class="rb-row"><label>Retry Wait (s):</label><input type="number" class="job-retry-wait" value="<?= (int)($j['retry_wait'] ?? 30) ?>" min="5" max="600" style="max-width:70px;"></div>
@@ -569,6 +586,17 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
         <div class="rb-row">
             <label>Status:</label>
             <span id="rb-status" class="rb-badge <?= $running ? 'rb-badge-run' : 'rb-badge-idle' ?>"><?= $running ? 'RUNNING' : 'IDLE' ?></span>
+        </div>
+        <!-- Live backup progress (populated by polling /tmp/restic-progress-<jobid>.json) -->
+        <div id="rb-progress" style="display:none;margin-top:8px;padding:8px 10px;background:var(--bg-secondary);border-radius:4px;">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;">
+                <strong id="rb-progress-target" style="font-size:.9em;"></strong>
+                <span id="rb-progress-stats" style="font-family:monospace;font-size:.85em;color:var(--text-muted);"></span>
+            </div>
+            <div style="height:10px;background:var(--bg-card);border-radius:5px;margin-top:6px;overflow:hidden;">
+                <div id="rb-progress-bar" style="height:100%;width:0%;background:var(--accent);transition:width .3s;"></div>
+            </div>
+            <div id="rb-progress-file" style="font-family:monospace;font-size:.78em;color:var(--text-muted);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></div>
         </div>
         <div class="rb-row" style="margin-top:8px;gap:6px;flex-wrap:wrap;">
             <button id="btn-start" class="rb-btn rb-btn-accent" onclick="rbStartBackup()" <?= $running ? 'disabled' : '' ?>>&#9654; Start Backup</button>
@@ -639,10 +667,29 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
         <div id="snap-list" style="display:none;">
             <div class="snapshots-scroll">
                 <table class="rb-snap-table">
-                    <thead><tr><th>ID</th><th>Date</th><th>Hostname</th><th>Tags</th><th></th></tr></thead>
+                    <thead><tr>
+                        <th style="width:28px;"><input type="checkbox" id="snap-check-all" onclick="rbSnapToggleAll(this)"></th>
+                        <th>ID</th><th>Date</th><th>Hostname</th><th>Tags</th><th></th>
+                    </tr></thead>
                     <tbody id="snap-tbody"></tbody>
                 </table>
             </div>
+            <!-- Batch actions -->
+            <div id="snap-actions-bar" style="display:flex;gap:8px;align-items:center;margin-top:8px;padding:8px;background:var(--bg-secondary);border-radius:4px;flex-wrap:wrap;">
+                <strong style="color:var(--text-muted);font-size:.88em;">Selected:</strong>
+                <span id="snap-selected-count" style="font-family:monospace;">0</span>
+                <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbSnapDiff()">&#9723; Diff (2 selected)</button>
+                <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbSnapTagPrompt('add')">&#127991; Add Tag</button>
+                <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbSnapTagPrompt('remove')">&#127991; Remove Tag</button>
+                <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbSnapTagPrompt('set')">&#127991; Set Tags</button>
+                <button class="rb-btn rb-btn-red rb-btn-sm" onclick="rbSnapForget(false)">&#128465; Forget</button>
+                <button class="rb-btn rb-btn-red rb-btn-sm" onclick="rbSnapForget(true)">&#128465; Forget + Prune</button>
+                <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbSnapRewritePrompt()">&#9998; Rewrite (Exclude Path)</button>
+                <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbSnapCopyPrompt()">&#128203; Copy to Target</button>
+                <div id="snap-action-msg" style="flex:1 1 100%;display:none;padding:6px 10px;font-size:.88em;border-radius:4px;background:var(--bg-card);"></div>
+            </div>
+            <!-- Diff output -->
+            <div id="snap-diff-out" style="display:none;margin-top:8px;max-height:360px;overflow:auto;font-family:monospace;font-size:.88em;background:var(--bg-secondary);padding:10px;border-radius:4px;"></div>
         </div>
 
         <!-- Find files across snapshots -->
@@ -692,6 +739,96 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
             </div>
             <div class="rb-hint">Check items to select them, then click Restore. Folders restore everything inside them.</div>
             <div id="snap-restore-msg" style="display:none;margin-top:6px;font-size:.88em;padding:6px 10px;border-radius:4px;background:var(--bg-secondary);"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- REPOSITORY TOOLS -->
+<!-- ================================================================ -->
+<div class="rb-section">
+    <div class="rb-section-hdr closed" onclick="rbToggle(this)">
+        <span>Repository Tools</span><span class="arr">&#9660;</span>
+    </div>
+    <div class="rb-section-body hidden">
+        <p style="color:var(--text-muted);margin:0 0 10px;">
+            Advanced repository operations. Select a job + target, then use the buttons below.
+            Long-running operations (check, recover, forget) stream their output to a dedicated log file under <code>/boot/logs</code>.
+        </p>
+
+        <div class="rb-row">
+            <label>Job:</label>
+            <select id="repo-job-sel" onchange="rbRepoJobChange()">
+                <option value="">-- Select Job --</option>
+                <?php foreach ($jobs as $j): ?>
+                <option value="<?= htmlspecialchars($j['id']) ?>"><?= htmlspecialchars($j['name'] ?: 'Unnamed') ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div class="rb-row" id="repo-target-row" style="display:none;">
+            <label>Target:</label>
+            <select id="repo-target-sel"></select>
+        </div>
+
+        <!-- STATS -->
+        <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
+            <strong style="color:var(--text-muted);font-size:.88em;display:block;margin-bottom:8px;">REPOSITORY STATISTICS</strong>
+            <div class="rb-row">
+                <label>Mode:</label>
+                <select id="repo-stats-mode" style="max-width:240px;">
+                    <option value="raw-data">raw-data (deduplicated size)</option>
+                    <option value="restore-size">restore-size</option>
+                    <option value="files-by-contents">files-by-contents</option>
+                    <option value="blobs-per-file">blobs-per-file</option>
+                </select>
+                <button class="rb-btn rb-btn-accent" onclick="rbRepoStats()">&#128202; Show Stats</button>
+            </div>
+            <div id="repo-stats-out" style="display:none;margin-top:8px;font-family:monospace;font-size:.88em;background:var(--bg-secondary);padding:10px;border-radius:4px;white-space:pre-wrap;"></div>
+        </div>
+
+        <!-- UNLOCK -->
+        <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
+            <strong style="color:var(--text-muted);font-size:.88em;display:block;margin-bottom:8px;">UNLOCK REPOSITORY</strong>
+            <div class="rb-hint">Remove stale locks left by a crashed or killed restic run. Use <code>--remove-all</code> only if you are sure no other restic process is using the repo.</div>
+            <div class="rb-row" style="margin-top:6px;">
+                <label style="display:inline-flex;align-items:center;gap:4px;font-weight:normal;">
+                    <input type="checkbox" id="repo-unlock-all"> Remove ALL locks (--remove-all)
+                </label>
+                <button class="rb-btn rb-btn-accent" onclick="rbRepoUnlock()">&#128275; Unlock</button>
+            </div>
+            <div id="repo-unlock-msg" style="display:none;margin-top:6px;font-size:.88em;padding:6px 10px;border-radius:4px;background:var(--bg-secondary);"></div>
+        </div>
+
+        <!-- CHECK -->
+        <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
+            <strong style="color:var(--text-muted);font-size:.88em;display:block;margin-bottom:8px;">INTEGRITY CHECK</strong>
+            <div class="rb-hint">Verify repository integrity. With <em>Subset</em> set (e.g. <code>5%</code> or <code>2G</code>) restic also re-reads and hashes that portion of the data.</div>
+            <div class="rb-row" style="margin-top:6px;">
+                <label>Subset:</label>
+                <input type="text" id="repo-check-subset" placeholder="e.g. 5% or 2G (empty = metadata only)" style="max-width:260px;">
+                <button class="rb-btn rb-btn-accent" onclick="rbRepoCheck()">&#9745; Start Check</button>
+            </div>
+            <div id="repo-check-msg" style="display:none;margin-top:6px;font-size:.88em;padding:6px 10px;border-radius:4px;background:var(--bg-secondary);"></div>
+        </div>
+
+        <!-- RECOVER -->
+        <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
+            <strong style="color:var(--text-muted);font-size:.88em;display:block;margin-bottom:8px;">RECOVER ORPHANED SNAPSHOTS</strong>
+            <div class="rb-hint">Scan the repo for packs not referenced by any snapshot (typically after a crashed backup). Runs in the background.</div>
+            <div class="rb-row" style="margin-top:6px;">
+                <button class="rb-btn rb-btn-accent" onclick="rbRepoRecover()">&#9998; Start Recover</button>
+            </div>
+            <div id="repo-recover-msg" style="display:none;margin-top:6px;font-size:.88em;padding:6px 10px;border-radius:4px;background:var(--bg-secondary);"></div>
+        </div>
+
+        <!-- RESTIC SELF-UPDATE -->
+        <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
+            <strong style="color:var(--text-muted);font-size:.88em;display:block;margin-bottom:8px;">RESTIC BINARY</strong>
+            <div class="rb-hint">Upgrade <code>/usr/local/bin/restic</code> to the latest upstream release.</div>
+            <div class="rb-row" style="margin-top:6px;">
+                <button class="rb-btn rb-btn-accent" onclick="rbResticSelfUpdate()">&#8593; Self-Update</button>
+            </div>
+            <div id="repo-selfup-msg" style="display:none;margin-top:6px;font-size:.88em;padding:6px 10px;border-radius:4px;background:var(--bg-secondary);white-space:pre-wrap;font-family:monospace;"></div>
         </div>
     </div>
 </div>

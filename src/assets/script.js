@@ -237,6 +237,8 @@ function rbAddTarget(btn) {
         + '<div class="target-pw-inline-row rb-row" style="display:none;"><label>Password:</label>'
         + '<input type="password" class="target-pw-inline" placeholder="Repository password" autocomplete="off"></div>'
         + '<div class="rb-row"><label>Name:</label><input type="text" class="target-name" value="" placeholder="e.g. Hetzner Cloud"></div>'
+        + '<div class="rb-row"><label>Upload Limit (KiB/s):</label><input type="number" class="target-limit-up" value="0" min="0" placeholder="0 = unlimited" style="max-width:140px;"><span class="rb-hint">0 = unlimited</span></div>'
+        + '<div class="rb-row"><label>Download Limit (KiB/s):</label><input type="number" class="target-limit-down" value="0" min="0" placeholder="0 = unlimited" style="max-width:140px;"><span class="rb-hint">0 = unlimited (restores &amp; checks)</span></div>'
         + '<div class="rb-row"><label>Optional Excludes:</label><select class="target-opt-exc"><option value="0" selected>No</option><option value="1">Yes</option></select></div>'
         + '<div class="rb-row"><label>Enabled:</label><select class="target-enabled"><option value="1" selected>Yes</option><option value="0">No</option></select></div>'
         + '</div>';
@@ -703,6 +705,10 @@ function rbCollect() {
                 percentage: panel.querySelector('.chk-pct').value.trim() || '2%',
                 schedule: panel.querySelector('.chk-sched').value
             },
+            verify: {
+                enabled: (panel.querySelector('.verify-enabled') || {value:'0'}).value === '1',
+                path:    (panel.querySelector('.verify-path')    || {value:''}).value.trim()
+            },
             tags: panel.querySelector('.job-tags').value.trim(),
             max_retries: parseInt(panel.querySelector('.job-retries').value) || 3,
             retry_wait: parseInt(panel.querySelector('.job-retry-wait').value) || 30
@@ -718,6 +724,8 @@ function rbCollect() {
                     return pfxText + card.querySelector('.target-url').value.trim();
                 })(),
                 name: card.querySelector('.target-name').value.trim(),
+                limit_upload: parseInt((card.querySelector('.target-limit-up') || {value:'0'}).value, 10) || 0,
+                limit_download: parseInt((card.querySelector('.target-limit-down') || {value:'0'}).value, 10) || 0,
                 use_optional_excludes: card.querySelector('.target-opt-exc').value === '1',
                 enabled: card.querySelector('.target-enabled').value === '1',
                 credentials: rbGetTargetCreds(card),
@@ -843,7 +851,10 @@ function rbStartBackup() {
     document.getElementById('btn-stop').disabled = false;
     rbUpdateBadge(true);
     var jobId = document.getElementById('rb-job-select').value;
-    rbAjax('backup', { job_id: jobId }, function() { rbStartLogPoll(); });
+    rbAjax('backup', { job_id: jobId }, function() {
+        rbStartLogPoll();
+        rbStartProgressPoll();
+    });
 }
 
 function rbStopBackup() {
@@ -944,9 +955,95 @@ function rbCheckStatus() {
             document.getElementById('btn-stop').disabled = true;
             rbUpdateBadge(false);
             rbStopLogPoll();
+            rbStopProgressPoll();
             rbRefreshLog();
+        } else {
+            rbStartProgressPoll();
         }
     });
+}
+
+// =============================================================================
+// LIVE PROGRESS (polls /tmp/restic-progress-<jobid>.json via API)
+// =============================================================================
+var rbProgressTimer = null;
+
+function rbStartProgressPoll() {
+    if (rbProgressTimer) return;
+    rbTickProgress();
+    rbProgressTimer = setInterval(rbTickProgress, 2000);
+}
+
+function rbStopProgressPoll() {
+    if (rbProgressTimer) { clearInterval(rbProgressTimer); rbProgressTimer = null; }
+    var box = document.getElementById('rb-progress');
+    if (box) box.style.display = 'none';
+}
+
+function rbTickProgress() {
+    var sel = document.getElementById('rb-job-select');
+    // Dropdown value = job id being viewed. Empty = "All Jobs".
+    // Prefer an explicitly selected job; otherwise scan known jobs until we
+    // find one with a non-idle progress file.
+    var candidates = [];
+    if (sel && sel.value) {
+        candidates.push(sel.value);
+    } else if (sel) {
+        for (var i = 0; i < sel.options.length; i++) {
+            if (sel.options[i].value) candidates.push(sel.options[i].value);
+        }
+    }
+    if (candidates.length === 0) { rbRenderProgress(null); return; }
+
+    var idx = 0;
+    function tryNext() {
+        if (idx >= candidates.length) { rbRenderProgress(null); return; }
+        var jid = candidates[idx++];
+        rbAjax('job_progress', { job_id: jid }, function(resp) {
+            if (resp && resp.status === 'success' && resp.progress &&
+                (resp.progress.phase === 'backup' || resp.progress.phase === 'starting')) {
+                rbRenderProgress(resp.progress);
+            } else {
+                tryNext();
+            }
+        }, function() { tryNext(); });
+    }
+    tryNext();
+}
+
+function rbRenderProgress(p) {
+    var box = document.getElementById('rb-progress');
+    if (!box) return;
+    if (!p) { box.style.display = 'none'; return; }
+    box.style.display = '';
+
+    var pct = p.percent_done != null ? Math.max(0, Math.min(100, p.percent_done * 100)) : 0;
+    document.getElementById('rb-progress-bar').style.width  = pct.toFixed(1) + '%';
+
+    var tgt = document.getElementById('rb-progress-target');
+    tgt.textContent = (p.target ? p.target + '  ' : '') + pct.toFixed(1) + '%';
+
+    var stats = '';
+    if (p.bytes_done != null && p.total_bytes != null) {
+        stats += rbHumanBytes(p.bytes_done) + ' / ' + rbHumanBytes(p.total_bytes);
+    }
+    if (p.files_done != null && p.total_files != null) {
+        stats += (stats ? '   ' : '') + p.files_done + ' / ' + p.total_files + ' files';
+    }
+    if (p.seconds_remaining != null && p.seconds_remaining > 0) {
+        stats += (stats ? '   ' : '') + 'ETA ' + rbHumanDuration(p.seconds_remaining);
+    }
+    document.getElementById('rb-progress-stats').textContent = stats;
+
+    var cf = (p.current_files || []);
+    document.getElementById('rb-progress-file').textContent = cf.length ? cf[0] : '';
+}
+
+function rbHumanDuration(s) {
+    s = Math.max(0, Math.round(s));
+    if (s < 60)   return s + 's';
+    if (s < 3600) return Math.floor(s/60) + 'm ' + (s%60) + 's';
+    return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'm';
 }
 
 // =============================================================================
@@ -1074,7 +1171,8 @@ function rbLoadSnapshots() {
                 var paths = snap.paths || [];
                 var tr = document.createElement('tr');
                 tr.style.background = 'rgba(240,140,0,.07)';
-                tr.innerHTML = '<td style="font-family:monospace;"><span style="color:var(--accent);font-size:.78em;font-weight:700;margin-right:4px;">LATEST</span>' + escHtml(snap.short_id) + '</td>'
+                tr.innerHTML = '<td><input type="checkbox" class="snap-check" value="' + escAttr(snap.id) + '" onchange="rbSnapUpdateCount()"></td>'
+                    + '<td style="font-family:monospace;"><span style="color:var(--accent);font-size:.78em;font-weight:700;margin-right:4px;">LATEST</span>' + escHtml(snap.short_id) + '</td>'
                     + '<td>' + escHtml(date) + '</td>'
                     + '<td>' + escHtml(snap.hostname || '-') + '</td>'
                     + '<td>' + escHtml(tags) + '</td>'
@@ -1091,7 +1189,8 @@ function rbLoadSnapshots() {
                 var tags = (snap.tags || []).join(', ') || '-';
                 var paths = snap.paths || [];
                 var tr = document.createElement('tr');
-                tr.innerHTML = '<td style="font-family:monospace;">' + escHtml(snap.short_id) + '</td>'
+                tr.innerHTML = '<td><input type="checkbox" class="snap-check" value="' + escAttr(snap.id) + '" onchange="rbSnapUpdateCount()"></td>'
+                    + '<td style="font-family:monospace;">' + escHtml(snap.short_id) + '</td>'
                     + '<td>' + escHtml(date) + '</td>'
                     + '<td>' + escHtml(snap.hostname || '-') + '</td>'
                     + '<td>' + escHtml(tags) + '</td>'
@@ -1100,6 +1199,7 @@ function rbLoadSnapshots() {
                     + ')">Browse</button></td>';
                 tbody.appendChild(tr);
             });
+            rbSnapUpdateCount();
         }
         document.getElementById('snap-list').style.display = '';
         document.getElementById('snap-browser').style.display = 'none';
@@ -1370,4 +1470,361 @@ function rbSnapFindOpen(snapshotId, shortId, targetPath) {
         var el = document.getElementById('snap-browser');
         if (el && el.scrollIntoView) el.scrollIntoView({behavior:'smooth', block:'start'});
     }, 80);
+}
+
+// =============================================================================
+// REPOSITORY TOOLS (unlock / stats / check / recover / self-update)
+// =============================================================================
+var rbRepoCtx = { jobId: null, targetId: null };
+
+function rbRepoJobChange() {
+    var jobId = document.getElementById('repo-job-sel').value;
+    var targetSel = document.getElementById('repo-target-sel');
+    var targetRow = document.getElementById('repo-target-row');
+    rbRepoCtx.jobId = jobId;
+    targetSel.innerHTML = '';
+    if (!jobId) { targetRow.style.display = 'none'; return; }
+    var panel = document.querySelector('.rb-job-panel[data-job-id="' + jobId + '"]');
+    if (!panel) { targetRow.style.display = 'none'; return; }
+    var targets = panel.querySelectorAll('.job-targets .rb-card');
+    targets.forEach(function(card) {
+        var opt = document.createElement('option');
+        opt.value = card.getAttribute('data-id');
+        var pfx  = card.querySelector('.rb-url-pfx');
+        var url  = card.querySelector('.target-url');
+        var name = card.querySelector('.target-name');
+        opt.textContent = (name && name.value.trim()) ||
+                          ((pfx && pfx.style.display !== 'none' ? pfx.textContent : '') + (url ? url.value.trim() : '')) ||
+                          'Target';
+        targetSel.appendChild(opt);
+    });
+    targetRow.style.display = targets.length > 1 ? '' : 'none';
+    targetSel.onchange = function() { rbRepoCtx.targetId = this.value; };
+    rbRepoCtx.targetId = targetSel.value;
+}
+
+function rbRepoShow(id, text, tone) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.style.display = '';
+    el.textContent = text;
+    el.style.borderLeft = '3px solid ' + (tone === 'error' ? '#d33' : tone === 'warn' ? '#d80' : '#2a7');
+}
+
+function rbRepoRequire() {
+    if (!rbRepoCtx.jobId) { rbMsg('Please select a job.', 'error'); return false; }
+    rbRepoCtx.targetId = document.getElementById('repo-target-sel').value;
+    return true;
+}
+
+function rbHumanBytes(n) {
+    if (!n || n <= 0) return '0 B';
+    var u = ['B','KiB','MiB','GiB','TiB','PiB'];
+    var i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return n.toFixed(n < 10 ? 2 : 1) + ' ' + u[i];
+}
+
+function rbRepoStats() {
+    if (!rbRepoRequire()) return;
+    var mode = document.getElementById('repo-stats-mode').value;
+    var out = document.getElementById('repo-stats-out');
+    out.style.display = ''; out.textContent = 'Loading stats…';
+    rbAjax('repo_stats', { job_id: rbRepoCtx.jobId, target_id: rbRepoCtx.targetId, mode: mode }, function(resp) {
+        if (resp && resp.status === 'success' && resp.stats) {
+            var s = resp.stats;
+            var lines = ['Mode: ' + (resp.mode || mode)];
+            if (s.total_size != null)         lines.push('Total Size:           ' + rbHumanBytes(s.total_size) + '   (' + s.total_size + ' bytes)');
+            if (s.total_uncompressed_size != null)
+                                              lines.push('Uncompressed Size:    ' + rbHumanBytes(s.total_uncompressed_size));
+            if (s.compression_ratio != null)  lines.push('Compression Ratio:    ' + Number(s.compression_ratio).toFixed(3));
+            if (s.compression_progress != null) lines.push('Compression Progress: ' + s.compression_progress + '%');
+            if (s.compression_space_saving != null) lines.push('Space Saved:          ' + Number(s.compression_space_saving).toFixed(1) + '%');
+            if (s.total_file_count != null)   lines.push('Total File Count:     ' + s.total_file_count);
+            if (s.total_blob_count != null)   lines.push('Total Blob Count:     ' + s.total_blob_count);
+            if (s.snapshots_count != null)    lines.push('Snapshots:            ' + s.snapshots_count);
+            out.textContent = lines.join('\n');
+        } else {
+            out.textContent = 'Error: ' + ((resp && resp.message) || 'unknown');
+        }
+    }, function(err) {
+        out.textContent = 'Error: ' + err;
+    });
+}
+
+function rbRepoUnlock() {
+    if (!rbRepoRequire()) return;
+    var all = document.getElementById('repo-unlock-all').checked;
+    rbRepoShow('repo-unlock-msg', 'Running unlock…', 'warn');
+    rbAjax('repo_unlock', { job_id: rbRepoCtx.jobId, target_id: rbRepoCtx.targetId, remove_all: all ? 1 : 0 }, function(resp) {
+        rbRepoShow('repo-unlock-msg', (resp && resp.message) || 'Done',
+                   resp && resp.status === 'success' ? 'ok' : 'error');
+    });
+}
+
+function rbRepoCheck() {
+    if (!rbRepoRequire()) return;
+    var subset = document.getElementById('repo-check-subset').value.trim();
+    if (!confirm('Start integrity check' + (subset ? ' with subset ' + subset : '') + '? This can take a while.')) return;
+    rbRepoShow('repo-check-msg', 'Starting…', 'warn');
+    rbAjax('repo_check', { job_id: rbRepoCtx.jobId, target_id: rbRepoCtx.targetId, subset: subset, read_data: subset ? 0 : 0 }, function(resp) {
+        rbRepoShow('repo-check-msg', (resp && resp.message) || 'Started',
+                   resp && (resp.status === 'started' || resp.status === 'success') ? 'ok' : 'error');
+    });
+}
+
+function rbRepoRecover() {
+    if (!rbRepoRequire()) return;
+    if (!confirm('Start restic recover? This scans the entire repo for orphaned pack files.')) return;
+    rbRepoShow('repo-recover-msg', 'Starting…', 'warn');
+    rbAjax('repo_recover', { job_id: rbRepoCtx.jobId, target_id: rbRepoCtx.targetId }, function(resp) {
+        rbRepoShow('repo-recover-msg', (resp && resp.message) || 'Started',
+                   resp && (resp.status === 'started' || resp.status === 'success') ? 'ok' : 'error');
+    });
+}
+
+function rbResticSelfUpdate() {
+    if (!confirm('Upgrade /usr/local/bin/restic to the latest upstream release?')) return;
+    rbRepoShow('repo-selfup-msg', 'Upgrading…', 'warn');
+    rbAjax('restic_self_update', {}, function(resp) {
+        var txt = (resp && resp.message) ? resp.message : 'Done';
+        if (resp && resp.version) txt += '\n\nVersion: ' + resp.version;
+        rbRepoShow('repo-selfup-msg', txt,
+                   resp && resp.status === 'success' ? 'ok' : 'error');
+    });
+}
+
+// =============================================================================
+// SNAPSHOT MULTI-SELECT ACTIONS (diff / tag / forget)
+// =============================================================================
+function rbSnapSelectedIds() {
+    var ids = [];
+    document.querySelectorAll('#snap-tbody .snap-check:checked').forEach(function(cb) {
+        ids.push(cb.value);
+    });
+    return ids;
+}
+
+function rbSnapUpdateCount() {
+    var n = rbSnapSelectedIds().length;
+    var el = document.getElementById('snap-selected-count');
+    if (el) el.textContent = String(n);
+}
+
+function rbSnapToggleAll(chk) {
+    document.querySelectorAll('#snap-tbody .snap-check').forEach(function(cb) {
+        cb.checked = chk.checked;
+    });
+    rbSnapUpdateCount();
+}
+
+function rbSnapActionMsg(text, tone) {
+    var el = document.getElementById('snap-action-msg');
+    if (!el) return;
+    el.style.display = '';
+    el.textContent = text;
+    el.style.borderLeft = '3px solid ' + (tone === 'error' ? '#d33' : tone === 'warn' ? '#d80' : '#2a7');
+}
+
+function rbSnapDiff() {
+    var ids = rbSnapSelectedIds();
+    if (ids.length !== 2) {
+        rbSnapActionMsg('Please select exactly 2 snapshots to diff.', 'error');
+        return;
+    }
+    var out = document.getElementById('snap-diff-out');
+    out.style.display = '';
+    out.textContent = 'Computing diff…';
+    rbAjax('snapshot_diff', {
+        job_id:      rbSnapCtx.jobId,
+        target_id:   rbSnapCtx.targetId,
+        snapshot_a:  ids[0],
+        snapshot_b:  ids[1]
+    }, function(resp) {
+        if (!resp || resp.status !== 'success') {
+            out.textContent = 'Error: ' + ((resp && resp.message) || 'unknown');
+            return;
+        }
+        var lines = [];
+        var stats = { added: 0, removed: 0, changed: 0 };
+        (resp.changes || []).forEach(function(c) {
+            var mark = c.modifier || c.type || '?';
+            var path = c.path || '';
+            if (mark.indexOf('+') !== -1) stats.added++;
+            else if (mark.indexOf('-') !== -1) stats.removed++;
+            else stats.changed++;
+            lines.push(mark + '  ' + path);
+        });
+        if (resp.summary) {
+            var s = resp.summary;
+            var hdr = 'Summary: ';
+            if (s.changed_files != null)  hdr += 'changed=' + s.changed_files + ' ';
+            if (s.added_files != null)    hdr += 'added=' + s.added_files + ' ';
+            if (s.removed_files != null)  hdr += 'removed=' + s.removed_files + ' ';
+            if (s.added_bytes != null)    hdr += ' +' + rbHumanBytes(s.added_bytes);
+            if (s.removed_bytes != null)  hdr += ' -' + rbHumanBytes(s.removed_bytes);
+            lines.unshift('');
+            lines.unshift(hdr);
+        }
+        if (lines.length === 0) lines = ['(no changes)'];
+        out.textContent = lines.join('\n');
+    }, function(err) {
+        out.textContent = 'Error: ' + err;
+    });
+}
+
+function rbSnapTagPrompt(op) {
+    var ids = rbSnapSelectedIds();
+    if (ids.length === 0) {
+        rbSnapActionMsg('Select at least one snapshot.', 'error');
+        return;
+    }
+    var label = op === 'add' ? 'Tags to ADD (comma-separated):'
+              : op === 'remove' ? 'Tags to REMOVE (comma-separated):'
+              : 'Tags to SET (comma-separated, replaces existing):';
+    var tags = prompt(label, '');
+    if (tags === null) return;
+    rbSnapActionMsg('Updating tags on ' + ids.length + ' snapshot(s)…', 'warn');
+    rbAjax('snapshot_tag', {
+        job_id:       rbSnapCtx.jobId,
+        target_id:    rbSnapCtx.targetId,
+        snapshot_ids: ids,
+        op:           op,
+        tags:         tags
+    }, function(resp) {
+        if (resp && resp.status === 'success') {
+            rbSnapActionMsg('Tags updated. Reload snapshots to see changes.', 'ok');
+        } else {
+            rbSnapActionMsg('Error: ' + ((resp && resp.message) || 'unknown'), 'error');
+        }
+    });
+}
+
+function rbSnapForget(prune) {
+    var ids = rbSnapSelectedIds();
+    if (ids.length === 0) {
+        rbSnapActionMsg('Select at least one snapshot.', 'error');
+        return;
+    }
+    var msg = 'Forget ' + ids.length + ' snapshot(s)'
+            + (prune ? ' AND prune the repository' : '')
+            + '? This cannot be undone.';
+    if (!confirm(msg)) return;
+    rbSnapActionMsg('Running forget' + (prune ? ' --prune' : '') + '…', 'warn');
+    rbAjax('snapshot_forget', {
+        job_id:       rbSnapCtx.jobId,
+        target_id:    rbSnapCtx.targetId,
+        snapshot_ids: ids,
+        prune:        prune ? 1 : 0
+    }, function(resp) {
+        if (resp && (resp.status === 'started' || resp.status === 'success')) {
+            rbSnapActionMsg((resp.message || 'Started') + (resp.logfile ? '  (log: ' + resp.logfile + ')' : ''), 'ok');
+        } else {
+            rbSnapActionMsg('Error: ' + ((resp && resp.message) || 'unknown'), 'error');
+        }
+    });
+}
+
+function rbSnapRewritePrompt() {
+    var ids = rbSnapSelectedIds();
+    if (ids.length === 0) {
+        rbSnapActionMsg('Select at least one snapshot.', 'error');
+        return;
+    }
+    var paths = prompt(
+        'Path(s) to EXCLUDE from the selected snapshot(s).\n' +
+        'One path or pattern per line (restic exclude syntax).\n\n' +
+        'This rewrites the snapshots into new snapshots without the excluded files.\n' +
+        'The OLD snapshots are kept unless you tick "Forget old snapshots" in the next prompt.',
+        ''
+    );
+    if (paths === null) return;
+    var excludes = paths.split(/\r?\n/).map(function(s){ return s.trim(); }).filter(Boolean);
+    if (!excludes.length) {
+        rbSnapActionMsg('No exclude patterns given.', 'error');
+        return;
+    }
+    var forget = confirm(
+        'Also forget the ORIGINAL snapshots after rewriting?\n\n' +
+        'OK = forget old  (only the rewritten copies remain)\n' +
+        'Cancel = keep both'
+    );
+    if (!confirm('Rewrite ' + ids.length + ' snapshot(s)?\nExcludes:\n  ' + excludes.join('\n  ')
+                 + '\n\n' + (forget ? 'Old snapshots WILL be forgotten.' : 'Old snapshots will be KEPT.'))) return;
+
+    rbSnapActionMsg('Rewriting in background…', 'warn');
+    rbAjax('snapshot_rewrite', {
+        job_id:       rbSnapCtx.jobId,
+        target_id:    rbSnapCtx.targetId,
+        snapshot_ids: ids,
+        excludes:     excludes,
+        forget:       forget ? 1 : 0
+    }, function(resp) {
+        if (resp && (resp.status === 'started' || resp.status === 'success')) {
+            rbSnapActionMsg((resp.message || 'Started') + (resp.logfile ? '  (log: ' + resp.logfile + ')' : ''), 'ok');
+        } else {
+            rbSnapActionMsg('Error: ' + ((resp && resp.message) || 'unknown'), 'error');
+        }
+    });
+}
+
+function rbSnapCopyPrompt() {
+    var ids = rbSnapSelectedIds();
+    // ids may be empty = "copy all"
+
+    if (!rbSnapCtx.jobId) {
+        rbSnapActionMsg('No job context.', 'error');
+        return;
+    }
+    var panel = document.querySelector('.rb-job-panel[data-job-id="' + rbSnapCtx.jobId + '"]');
+    if (!panel) {
+        rbSnapActionMsg('Job panel not found.', 'error');
+        return;
+    }
+    // Collect other targets as possible destinations
+    var cards = panel.querySelectorAll('.job-targets .rb-card');
+    var options = [];
+    cards.forEach(function(card) {
+        var tid = card.getAttribute('data-id');
+        if (tid === rbSnapCtx.targetId) return;
+        var name = card.querySelector('.target-name');
+        var url  = card.querySelector('.target-url');
+        var pfx  = card.querySelector('.rb-url-pfx');
+        var lbl  = (name && name.value.trim())
+                   || ((pfx && pfx.style.display !== 'none' ? pfx.textContent : '') + (url ? url.value.trim() : ''))
+                   || tid;
+        options.push({ id: tid, label: lbl });
+    });
+    if (options.length === 0) {
+        rbSnapActionMsg('No other target in this job to copy to. Add a second target first.', 'error');
+        return;
+    }
+    var listed = options.map(function(o, i) { return (i+1) + ') ' + o.label; }).join('\n');
+    var pick = prompt(
+        'Copy ' + (ids.length ? ids.length + ' selected snapshot(s)' : 'ALL snapshots') +
+        ' to which destination?\n\n' + listed + '\n\nEnter the number:',
+        '1'
+    );
+    if (pick === null) return;
+    var idx = parseInt(pick, 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= options.length) {
+        rbSnapActionMsg('Invalid selection.', 'error');
+        return;
+    }
+    var dst = options[idx];
+    if (!confirm('Copy to "' + dst.label + '"?\n\nMake sure the destination repo has been initialized.')) return;
+
+    rbSnapActionMsg('Copy started…', 'warn');
+    rbAjax('snapshot_copy', {
+        job_id:        rbSnapCtx.jobId,
+        src_target_id: rbSnapCtx.targetId,
+        dst_target_id: dst.id,
+        snapshot_ids:  ids
+    }, function(resp) {
+        if (resp && (resp.status === 'started' || resp.status === 'success')) {
+            rbSnapActionMsg((resp.message || 'Started') + (resp.logfile ? '  (log: ' + resp.logfile + ')' : ''), 'ok');
+        } else {
+            rbSnapActionMsg('Error: ' + ((resp && resp.message) || 'unknown'), 'error');
+        }
+    });
 }

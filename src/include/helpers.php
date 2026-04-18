@@ -64,6 +64,14 @@ function restic_default_job(): array {
             'percentage' => '2%',
             'schedule'   => 'sunday',
         ],
+        'verify' => [
+            // Restore-verification: after each successful target backup,
+            // restore one known file from the newly-created snapshot and
+            // byte-compare it with the live source. Catches silent corruption
+            // and "backups that never actually restore" surprises.
+            'enabled' => false,
+            'path'    => '', // absolute path to a small file inside the sources
+        ],
         'max_retries' => 3,
         'retry_wait'  => 30,
         'tags'        => '',
@@ -133,6 +141,10 @@ function restic_load_config(): array {
  * Saves the plugin config to disk and materializes hook scripts under
  * /boot/config/plugins/restic-backup/hooks/<jobid>/ so the user can inspect
  * (or SSH-edit) the exact scripts that will run.
+ *
+ * Atomic save: writes to .json.new + fsync + rename, so a power loss during
+ * the write cannot corrupt the existing config. Permissions are locked down
+ * to 0600 because the config contains passwords/credentials in plaintext.
  */
 function restic_save_config(array $config): bool {
     if (!is_dir(RESTIC_CONFIG_DIR)) {
@@ -142,10 +154,29 @@ function restic_save_config(array $config): bool {
     if ($json === false) {
         return false;
     }
-    $result = @file_put_contents(RESTIC_CONFIG_FILE, $json);
-    if ($result === false) {
+
+    $tmp = RESTIC_CONFIG_FILE . '.new';
+    $fh  = @fopen($tmp, 'wb');
+    if ($fh === false) {
         return false;
     }
+    if (@fwrite($fh, $json) === false) {
+        @fclose($fh);
+        @unlink($tmp);
+        return false;
+    }
+    @fflush($fh);
+    // fsync() requires PHP 8.1; fall back silently on older installs.
+    if (function_exists('fsync')) { @fsync($fh); }
+    @fclose($fh);
+    @chmod($tmp, 0600);
+
+    if (!@rename($tmp, RESTIC_CONFIG_FILE)) {
+        @unlink($tmp);
+        return false;
+    }
+    @chmod(RESTIC_CONFIG_FILE, 0600);
+
     // Best-effort: write hook scripts. Failure here must not fail the save.
     @restic_write_hook_scripts($config);
     return true;
@@ -161,8 +192,9 @@ function restic_save_config(array $config): bool {
 function restic_write_hook_scripts(array $config): void {
     $root = RESTIC_HOOKS_DIR;
     if (!is_dir($root)) {
-        @mkdir($root, 0755, true);
+        @mkdir($root, 0700, true);
     }
+    @chmod($root, 0700);
     // Collect which directories/files we want to keep.
     $keep_dirs  = [];
     $keep_files = [];
@@ -172,7 +204,8 @@ function restic_write_hook_scripts(array $config): void {
         if ($jid === '') { continue; }
         $job_dir = $root . '/' . $jid;
         $keep_dirs[$job_dir] = true;
-        if (!is_dir($job_dir)) { @mkdir($job_dir, 0755, true); }
+        if (!is_dir($job_dir)) { @mkdir($job_dir, 0700, true); }
+        @chmod($job_dir, 0700);
 
         foreach (['pre_backup' => 'pre', 'post_backup' => 'post'] as $key => $phase) {
             $list = $job['hooks'][$key] ?? [];
@@ -189,15 +222,21 @@ function restic_write_hook_scripts(array $config): void {
                 $body .= "# Enabled=" . (!empty($hook['enabled']) ? 'yes' : 'no')
                        . "  Timeout=" . intval($hook['timeout'] ?? 3600) . "s"
                        . "  OnError=" . ($hook['on_error'] ?? 'continue') . "\n";
-                $body .= "# -- edit the command in the Web UI; manual edits here are overwritten on save --\n\n";
+                $body .= "# -- edit the command in the Web UI; manual edits here are overwritten on save --\n";
+                // set -eo pipefail so a failing command in the middle of a
+                // pipeline (e.g. `docker exec | gzip > file`) actually fails.
+                $body .= "set -eo pipefail\n\n";
                 $body .= ($hook['command'] ?? '') . "\n";
 
                 // Only rewrite if content differs — avoids unnecessary USB writes.
-                $existing = @file_get_contents($path);
+                // is_file() check avoids a warning on first-time creation where
+                // the file does not yet exist (@ is not always honored by
+                // custom error handlers in PHP 8+).
+                $existing = is_file($path) ? @file_get_contents($path) : false;
                 if ($existing !== $body) {
                     @file_put_contents($path, $body);
-                    @chmod($path, 0755);
                 }
+                @chmod($path, 0700);
             }
         }
     }
@@ -440,9 +479,10 @@ function restic_get_target_config(string $job_id, string $target_id): ?array {
         if (!empty($creds['b2_account_key'])) $env['B2_ACCOUNT_KEY'] = $creds['b2_account_key'];
     }
 
-    $sftp_args = function_exists('restic_sftp_args') ? restic_sftp_args($type, $creds) : [];
+    $sftp_args  = function_exists('restic_sftp_args')  ? restic_sftp_args($type, $creds) : [];
+    $limit_args = function_exists('restic_limit_args') ? restic_limit_args($target)      : [];
 
-    return compact('url', 'env', 'sftp_args', 'target', 'job');
+    return compact('url', 'env', 'sftp_args', 'limit_args', 'target', 'job');
 }
 
 /**
