@@ -126,12 +126,29 @@ function restic_load_config(): array {
         $config['jobs'] = [];
     }
     // Back-fill hook structure for older configs that predate the feature.
+    // Also normalize target URLs: strip any doubled protocol prefix (legacy
+    // artifact from an earlier UI bug) so reads like snapshot_browse always
+    // see exactly one `sftp://` / `s3:` / etc.
+    $pfxMap = ['sftp'=>'sftp://','s3'=>'s3:','b2'=>'b2:','rest'=>'rest:','rclone'=>'rclone:'];
     foreach ($config['jobs'] as &$_job) {
         if (!isset($_job['hooks']) || !is_array($_job['hooks'])) {
             $_job['hooks'] = ['pre_backup' => [], 'post_backup' => []];
         }
         if (!isset($_job['hooks']['pre_backup']))  { $_job['hooks']['pre_backup']  = []; }
         if (!isset($_job['hooks']['post_backup'])) { $_job['hooks']['post_backup'] = []; }
+        if (isset($_job['targets']) && is_array($_job['targets'])) {
+            foreach ($_job['targets'] as &$_tgt) {
+                $_ttype = $_tgt['type'] ?? 'local';
+                $_pfx   = $pfxMap[$_ttype] ?? '';
+                if ($_pfx === '' || !isset($_tgt['url'])) continue;
+                $_url = $_tgt['url'];
+                while (strncmp($_url, $_pfx . $_pfx, strlen($_pfx) * 2) === 0) {
+                    $_url = substr($_url, strlen($_pfx));
+                }
+                $_tgt['url'] = $_url;
+            }
+            unset($_tgt);
+        }
     }
     unset($_job);
     return $config;

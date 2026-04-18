@@ -152,6 +152,32 @@ switch ($action) {
             $config['jobs'] = [];
         }
 
+        // Normalize target URLs: strip any accidental doubled protocol prefix
+        // (a legacy artifact from an earlier UI bug where the prefix span was
+        // not combined with the input on Test/Init, so users typed `sftp://`
+        // into the input, and Save then doubled it to `sftp://sftp://...`).
+        $pfxMap = ['sftp'=>'sftp://','s3'=>'s3:','b2'=>'b2:','rest'=>'rest:','rclone'=>'rclone:'];
+        foreach ($config['jobs'] as &$_job) {
+            if (!isset($_job['targets']) || !is_array($_job['targets'])) continue;
+            foreach ($_job['targets'] as &$_tgt) {
+                $_ttype = $_tgt['type'] ?? 'local';
+                $_pfx   = $pfxMap[$_ttype] ?? '';
+                if ($_pfx === '' || !isset($_tgt['url'])) continue;
+                $_url = $_tgt['url'];
+                // Collapse any doubled occurrences at the start of the URL.
+                while (strncmp($_url, $_pfx . $_pfx, strlen($_pfx) * 2) === 0) {
+                    $_url = substr($_url, strlen($_pfx));
+                }
+                // Ensure exactly one prefix is present.
+                if (strncmp($_url, $_pfx, strlen($_pfx)) !== 0) {
+                    $_url = $_pfx . $_url;
+                }
+                $_tgt['url'] = $_url;
+            }
+            unset($_tgt);
+        }
+        unset($_job);
+
         $jobCount = count($config['jobs']);
 
         if (restic_save_config($config)) {

@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "restic-backup">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.04.18.08">
-<!ENTITY md5       "730754dad43cf1ce939b886a26d13202">
+<!ENTITY version   "2026.04.18.09">
+<!ENTITY md5       "0dfde9efc6ab098615bbb53d4ed8b5ca">
 <!ENTITY launch    "Settings/ResticBackup">
 <!ENTITY github    "MajorPain007/unraid-restic">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/src/&name;.plg">
@@ -22,6 +22,23 @@
         icon="shield">
 
 <CHANGES>
+## Version 2026.04.18.09
+- Fix SFTP (and other non-local) repository URL handling in the target
+  editor: the Test and Init Repo buttons were only sending the input
+  value to the backend, ignoring the fixed prefix span (sftp://, s3:,
+  b2:, rest:, rclone:). This caused "Fatal: parsing repository
+  location failed: invalid backend" for a freshly added SFTP target
+  unless the user manually typed sftp:// into the input — which then
+  caused Save to double the prefix, so the stored URL became
+  sftp://sftp://host/path and the Snapshot Browser showed a doubled
+  sftp:// in URLs.
+- Target URL is now always built as (prefix span) + (bare input value).
+  User-typed prefixes are stripped on type change AND on Test / Init,
+  so doubled prefixes can no longer be produced.
+- Legacy configs with doubled prefixes are auto-healed on load and on
+  save: any sftp://sftp://, s3:s3:, etc. is collapsed back to a single
+  prefix transparently — no manual re-entry required.
+
 ## Version 2026.04.18.08
 - Fix plugin upgrade failure: "SHA256SUMS download failure: Network
   failure" from Unraid's plugin manager, which aborted the whole

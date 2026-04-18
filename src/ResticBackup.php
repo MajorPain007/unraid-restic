@@ -263,7 +263,14 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                             $tpfxMap = ['sftp'=>'sftp://','s3'=>'s3:','b2'=>'b2:','rest'=>'rest:','rclone'=>'rclone:'];
                             $tpfx   = $tpfxMap[$ttype] ?? '';
                             $tfull  = $t['url'] ?? '';
-                            $tsuffix = ($tpfx && strncmp($tfull, $tpfx, strlen($tpfx)) === 0) ? substr($tfull, strlen($tpfx)) : $tfull;
+                            // Strip prefix repeatedly in case a previous bug produced a doubled prefix
+                            // like "sftp://sftp://host/path" — we want only the bare suffix in the input.
+                            $tsuffix = $tfull;
+                            if ($tpfx !== '') {
+                                while (strncmp($tsuffix, $tpfx, strlen($tpfx)) === 0) {
+                                    $tsuffix = substr($tsuffix, strlen($tpfx));
+                                }
+                            }
                             // Password: prefer target-level, fall back to general (migration path)
                             $tpwmode   = $t['password_mode']   ?? ($config['general']['password_mode']   ?? 'file');
                             $tpwfile   = $t['password_file']   ?? ($config['general']['password_file']   ?? '');

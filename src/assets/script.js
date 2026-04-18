@@ -514,6 +514,11 @@ function rbTargetTypeChange(sel) {
         // Coming from local: strip any accidental protocol prefix
         suffix = suffix.replace(/^[a-z][a-z0-9+.-]*:(?:\/\/)?/, '');
     }
+    // Defensive: if the user manually typed the new prefix into the input
+    // (e.g. "sftp://host/path"), strip it so rbCollect doesn't double it.
+    if (newPfx && suffix.indexOf(newPfx) === 0) {
+        suffix = suffix.slice(newPfx.length);
+    }
 
     // For local the value IS the full path; for others it's the suffix after the prefix span
     urlInput.value = suffix;
@@ -718,11 +723,7 @@ function rbCollect() {
             job.targets.push({
                 id: card.getAttribute('data-id') || rbGenId(),
                 type: card.querySelector('.target-type').value,
-                url: (function() {
-                    var pfx = card.querySelector('.rb-url-pfx');
-                    var pfxText = (pfx && pfx.style.display !== 'none') ? pfx.textContent : '';
-                    return pfxText + card.querySelector('.target-url').value.trim();
-                })(),
+                url: rbCardFullUrl(card),
                 name: card.querySelector('.target-name').value.trim(),
                 limit_upload: parseInt((card.querySelector('.target-limit-up') || {value:'0'}).value, 10) || 0,
                 limit_download: parseInt((card.querySelector('.target-limit-down') || {value:'0'}).value, 10) || 0,
@@ -878,10 +879,24 @@ function rbCardPwBody(card) {
     };
 }
 
+// Build the full repository URL from a target card: prefix span (if visible)
+// + bare input value. Defensive: if the user already typed the prefix into the
+// input we strip it to avoid doubled protocols like `sftp://sftp://...`.
+function rbCardFullUrl(card) {
+    var pfxSpan  = card.querySelector('.rb-url-pfx');
+    var urlInput = card.querySelector('.target-url');
+    var input    = urlInput ? urlInput.value.trim() : '';
+    var pfx      = (pfxSpan && pfxSpan.style.display !== 'none') ? pfxSpan.textContent : '';
+    if (pfx && input.indexOf(pfx) === 0) input = input.slice(pfx.length);
+    return pfx + input;
+}
+
 function rbInitRepo(btn) {
     var card = btn.closest('.rb-card');
-    var url = card.querySelector('.target-url').value.trim();
-    if (!url) { rbMsg('Please enter a repository URL first.', 'error'); return; }
+    var url = rbCardFullUrl(card);
+    if (!url || !card.querySelector('.target-url').value.trim()) {
+        rbMsg('Please enter a repository URL first.', 'error'); return;
+    }
     btn.disabled = true; btn.textContent = 'Init...';
     var body = rbCardPwBody(card);
     body.url = url;
@@ -898,8 +913,10 @@ function rbInitRepo(btn) {
 
 function rbTestTarget(btn) {
     var card = btn.closest('.rb-card');
-    var url = card.querySelector('.target-url').value.trim();
-    if (!url) { rbMsg('Please enter a repository URL first.', 'error'); return; }
+    var url = rbCardFullUrl(card);
+    if (!url || !card.querySelector('.target-url').value.trim()) {
+        rbMsg('Please enter a repository URL first.', 'error'); return;
+    }
     btn.disabled = true; btn.textContent = 'Testing...';
     var body = rbCardPwBody(card);
     body.url = url;
