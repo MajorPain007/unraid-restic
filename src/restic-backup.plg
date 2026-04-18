@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "restic-backup">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.04.18.07">
-<!ENTITY md5       "cc0cdd0505f8951741e2bc68ab9df637">
+<!ENTITY version   "2026.04.18.08">
+<!ENTITY md5       "730754dad43cf1ce939b886a26d13202">
 <!ENTITY launch    "Settings/ResticBackup">
 <!ENTITY github    "MajorPain007/unraid-restic">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/src/&name;.plg">
@@ -22,6 +22,24 @@
         icon="shield">
 
 <CHANGES>
+## Version 2026.04.18.08
+- Fix plugin upgrade failure: "SHA256SUMS download failure: Network
+  failure" from Unraid's plugin manager, which aborted the whole
+  upgrade even though the plugin package itself had already been
+  downloaded. GitHub's release-asset URLs redirect to a separate CDN
+  host (release-assets.githubusercontent.com), which the plugin
+  manager's built-in downloader handled unreliably.
+- Restic binary + SHA256SUMS are now downloaded by an inline curl
+  step during install (with -fL, --retry 3, --connect-timeout 20)
+  instead of via Unraid's plugin-file URL mechanism. The curl errors
+  are non-fatal, so a transient network issue no longer blocks the
+  plugin upgrade — the plugin keeps using the previously installed
+  restic binary, and you can always re-run the upgrade or use
+  Repository Tools -> Self-Update from the WebUI to refresh it.
+- If the same restic version is already installed, the download is
+  skipped entirely — re-running the plugin install is now idempotent
+  and offline-safe.
+
 ## Version 2026.04.18.07
 - Snapshot browser: removed the Add Tag / Remove Tag / Set Tags buttons
   from the action bar. The underlying API endpoint and JS helper stay
@@ -231,15 +249,6 @@ mkdir -p &tmpDir;
 </INLINE>
 </FILE>
 
-<!-- Download restic binary + its signed checksum list -->
-<FILE Name="/tmp/restic.bz2">
-<URL>&resticURL;</URL>
-</FILE>
-
-<FILE Name="/tmp/restic.SHA256SUMS">
-<URL>&resticSumsURL;</URL>
-</FILE>
-
 <!-- Install plugin package -->
 <FILE Name="&configDir;/&name;-&version;-x86_64-1.txz" Run="upgradepkg --install-new">
 <URL>&pkgURL;/&name;-&version;-x86_64-1.txz</URL>
@@ -253,42 +262,74 @@ rm -f $(ls &configDir;/&name;-*.txz 2>/dev/null | grep -v '&version;')
 </INLINE>
 </FILE>
 
-<!-- Install restic binary (with SHA256 verification against upstream) -->
+<!-- Install/refresh restic binary — downloaded inline so that transient
+     network issues (e.g. github.com release CDN redirects) don't abort
+     the plugin upgrade itself. The plugin can still be used with the
+     previously installed restic binary if the download fails. -->
 <FILE Run="/bin/bash">
 <INLINE>
-set -e
-if [ ! -f /tmp/restic.bz2 ]; then
-    echo "WARNING: restic binary not found at /tmp/restic.bz2"
-    exit 1
-fi
+# NOTE: intentionally no `set -e` — we want the plugin install to succeed
+# even if restic can't be downloaded right now (user can re-run or use
+# Self-Update from the WebUI later).
 
-# Verify the downloaded .bz2 against the SHA256SUMS list published with
-# the restic release. Aborts the install if the hash does not match.
 FNAME="restic_&resticVer;_linux_amd64.bz2"
-if [ -f /tmp/restic.SHA256SUMS ]; then
-    EXPECTED=$(awk -v f="$FNAME" '$2==f {print $1}' /tmp/restic.SHA256SUMS)
-    if [ -n "$EXPECTED" ]; then
-        ACTUAL=$(sha256sum /tmp/restic.bz2 | awk '{print $1}')
-        if [ "$EXPECTED" != "$ACTUAL" ]; then
-            echo "ERROR: restic SHA256 mismatch!"
-            echo "  expected: $EXPECTED"
-            echo "  actual  : $ACTUAL"
-            rm -f /tmp/restic.bz2 /tmp/restic.SHA256SUMS
-            exit 1
-        fi
-        echo "restic SHA256 verified: $ACTUAL"
-    else
-        echo "WARNING: $FNAME not present in SHA256SUMS — cannot verify"
+BIN_URL="&resticURL;"
+SUMS_URL="&resticSumsURL;"
+TMP_BZ="/tmp/restic.bz2"
+TMP_SUMS="/tmp/restic.SHA256SUMS"
+
+need_install=1
+
+if [ -x /usr/local/bin/restic ]; then
+    INSTALLED=$(/usr/local/bin/restic version 2>/dev/null | awk '/^restic/ {print $2}')
+    if [ "$INSTALLED" = "&resticVer;" ]; then
+        echo "restic &resticVer; already installed — skipping download."
+        need_install=0
     fi
-else
-    echo "WARNING: SHA256SUMS file missing — cannot verify restic download"
 fi
 
-bunzip2 -f /tmp/restic.bz2
-mv /tmp/restic /usr/local/bin/restic
-chmod 755 /usr/local/bin/restic
-rm -f /tmp/restic.SHA256SUMS
-echo "Restic installed: $(restic version 2>/dev/null || echo 'unknown')"
+if [ "$need_install" = "1" ]; then
+    echo "Downloading restic &resticVer; from GitHub..."
+    rm -f "$TMP_BZ" "$TMP_SUMS"
+    curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -o "$TMP_BZ"   "$BIN_URL"  || echo "WARNING: restic binary download failed"
+    curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -o "$TMP_SUMS" "$SUMS_URL" || echo "WARNING: SHA256SUMS download failed"
+
+    if [ -f "$TMP_BZ" ] &amp;&amp; [ -s "$TMP_BZ" ]; then
+        verified=0
+        if [ -f "$TMP_SUMS" ] &amp;&amp; [ -s "$TMP_SUMS" ]; then
+            EXPECTED=$(awk -v f="$FNAME" '$2==f {print $1}' "$TMP_SUMS")
+            if [ -n "$EXPECTED" ]; then
+                ACTUAL=$(sha256sum "$TMP_BZ" | awk '{print $1}')
+                if [ "$EXPECTED" = "$ACTUAL" ]; then
+                    echo "restic SHA256 verified: $ACTUAL"
+                    verified=1
+                else
+                    echo "ERROR: restic SHA256 mismatch! expected=$EXPECTED actual=$ACTUAL"
+                    rm -f "$TMP_BZ" "$TMP_SUMS"
+                fi
+            else
+                echo "WARNING: $FNAME not in SHA256SUMS — installing without verification"
+                verified=1
+            fi
+        else
+            echo "WARNING: SHA256SUMS file missing — installing without verification"
+            verified=1
+        fi
+
+        if [ "$verified" = "1" ] &amp;&amp; [ -f "$TMP_BZ" ]; then
+            bunzip2 -f "$TMP_BZ"
+            mv /tmp/restic /usr/local/bin/restic
+            chmod 755 /usr/local/bin/restic
+            echo "Restic installed: $(/usr/local/bin/restic version 2>/dev/null || echo unknown)"
+        fi
+    else
+        echo "WARNING: restic download skipped — plugin will use previously installed restic (if any)."
+        echo "         You can run 'Repository Tools -> Self-Update' from the WebUI later."
+    fi
+
+    rm -f "$TMP_SUMS"
+fi
+exit 0
 </INLINE>
 </FILE>
 
