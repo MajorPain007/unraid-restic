@@ -919,6 +919,52 @@ switch ($action) {
     }
 
     // =========================================================================
+    // REPO TOOL LOG TAIL — stream the tail of a background tool's logfile
+    //   (check/recover). Only allows files inside RESTIC_LOG_DIR with the
+    //   expected "restic-check-*" / "restic-recover-*" naming.
+    // =========================================================================
+    case 'repo_tool_log': {
+        $logfile = (string)($data['logfile'] ?? '');
+        $max     = 16384; // last 16 KiB is enough for live tail
+        // Security: restrict to our log dir and known prefixes.
+        $real = realpath($logfile);
+        $base = realpath(RESTIC_LOG_DIR) ?: RESTIC_LOG_DIR;
+        $name = basename($logfile);
+        $ok_prefix = (strpos($name, 'restic-check-')   === 0)
+                  || (strpos($name, 'restic-recover-') === 0)
+                  || (strpos($name, 'restic-copy-')    === 0);
+        if (!$real || !$ok_prefix || strpos($real, $base) !== 0) {
+            echo json_encode(['status' => 'error', 'message' => 'Invalid logfile']);
+            break;
+        }
+        if (!is_file($real)) {
+            echo json_encode(['status' => 'pending', 'text' => '', 'done' => false]);
+            break;
+        }
+        $size = filesize($real);
+        $offset = max(0, $size - $max);
+        $fh = @fopen($real, 'rb');
+        $text = '';
+        if ($fh) {
+            if ($offset > 0) fseek($fh, $offset);
+            $text = stream_get_contents($fh);
+            fclose($fh);
+        }
+        // Heuristic: a background job is "done" when the file hasn't been
+        // modified for > 3 s AND the last line looks like a restic summary.
+        $age = time() - filemtime($real);
+        $done = $age > 3 && (preg_match('/(no errors were found|Fatal:|repository contains errors|will be removed)/i', $text) === 1);
+        echo json_encode([
+            'status' => 'success',
+            'text'   => $text,
+            'size'   => $size,
+            'mtime'  => filemtime($real),
+            'done'   => $done,
+        ]);
+        break;
+    }
+
+    // =========================================================================
     // SNAPSHOT DIFF — diff between two snapshots
     // =========================================================================
     case 'snapshot_diff': {
@@ -1167,17 +1213,18 @@ switch ($action) {
     case 'snapshot_copy': {
         $job_id        = $data['job_id']         ?? '';
         $src_target_id = $data['src_target_id']  ?? '';
+        $dst_job_id    = $data['dst_job_id']     ?? $job_id;   // default: same job
         $dst_target_id = $data['dst_target_id']  ?? '';
         $snapshot_ids  = $data['snapshot_ids']   ?? [];
         if (!is_array($snapshot_ids)) $snapshot_ids = [$snapshot_ids];
 
-        if ($src_target_id === $dst_target_id) {
+        if ($job_id === $dst_job_id && $src_target_id === $dst_target_id) {
             echo json_encode(['status' => 'error', 'message' => 'Source and destination must differ']);
             break;
         }
 
-        $src = restic_get_target_config($job_id, $src_target_id);
-        $dst = restic_get_target_config($job_id, $dst_target_id);
+        $src = restic_get_target_config($job_id,     $src_target_id);
+        $dst = restic_get_target_config($dst_job_id, $dst_target_id);
         if (!$src || !$dst) {
             echo json_encode(['status' => 'error', 'message' => 'Source or destination not found']);
             break;
@@ -1207,11 +1254,22 @@ switch ($action) {
         // Empty = copy ALL snapshots
         $ids_str = $ids ? (' ' . implode(' ', array_map('escapeshellarg', $ids))) : '';
 
+        // Optional snapshot-level filters (only applied when no explicit IDs).
+        $filter = '';
+        if (!$ids) {
+            $fh = trim((string)($data['filter_host'] ?? ''));
+            $ft = trim((string)($data['filter_tag']  ?? ''));
+            $fp = trim((string)($data['filter_path'] ?? ''));
+            if ($fh !== '') $filter .= ' --host ' . escapeshellarg($fh);
+            if ($ft !== '') $filter .= ' --tag '  . escapeshellarg($ft);
+            if ($fp !== '') $filter .= ' --path ' . escapeshellarg($fp);
+        }
+
         $logfile = RESTIC_LOG_DIR . '/restic-copy-' . date('Ymd-His') . '.log';
         $cmd = "{$env_str} restic -r " . escapeshellarg($src['url'])
              . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
              . ' --repo2 ' . escapeshellarg($dst['url'])
-             . ' copy' . $ids_str
+             . ' copy' . $filter . $ids_str
              . ' >> ' . escapeshellarg($logfile) . ' 2>&1';
         exec('nohup bash -c ' . escapeshellarg($cmd) . ' &');
         echo json_encode([

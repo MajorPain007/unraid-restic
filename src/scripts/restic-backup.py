@@ -832,7 +832,8 @@ def run_hooks(job, phase, status_ctx=None):
 
 def run_job(config, job):
     job_name = job.get("name", "Unnamed")
-    logger.set_job(job.get("id"))
+    job_id   = job.get("id", "")
+    logger.set_job(job_id)
     logger.info(f"=== Job: {job_name} ===")
     t_job = time.time()
 

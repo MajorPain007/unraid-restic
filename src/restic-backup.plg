@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "restic-backup">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.04.18.04">
-<!ENTITY md5       "fea7d359dd89b98518121a733f3034d2">
+<!ENTITY version   "2026.04.18.06">
+<!ENTITY md5       "cd25f319817d930f702c914e40d7b413">
 <!ENTITY launch    "Settings/ResticBackup">
 <!ENTITY github    "MajorPain007/unraid-restic">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/src/&name;.plg">
@@ -11,7 +11,7 @@
 <!ENTITY pluginDir "/usr/local/emhttp/plugins/&name;">
 <!ENTITY configDir "/boot/config/plugins/&name;">
 <!ENTITY tmpDir    "/tmp/&name;">
-<!ENTITY resticVer "0.17.3">
+<!ENTITY resticVer "0.18.1">
 <!ENTITY resticURL "https://github.com/restic/restic/releases/download/v&resticVer;/restic_&resticVer;_linux_amd64.bz2">
 <!ENTITY resticSumsURL "https://github.com/restic/restic/releases/download/v&resticVer;/SHA256SUMS">
 ]>
@@ -22,6 +22,39 @@
         icon="shield">
 
 <CHANGES>
+## Version 2026.04.18.06
+- Bundled restic upgraded from 0.17.3 to 0.18.1 (upstream stable).
+  Download URL and SHA256SUMS are both driven by the same `resticVer`
+  entity in the .plg, so integrity verification of the new binary is
+  automatic during install.
+- Fix (critical): the Python runner crashed with
+  `CRITICAL: name 'job_id' is not defined` right before the first
+  target upload, aborting every backup. The live-progress refactor
+  added a `job_id` kwarg to `run_backup_attempt()` but forgot to
+  expose the variable inside `run_job()`. Backups now run end-to-end
+  again and the progress file `/tmp/restic-progress-[jobid].json` is
+  written as intended.
+- Repository Tools — Check and Recover are now visible: a new
+  `repo_tool_log` API tails the background restic log file
+  (restricted to `restic-check-*` / `restic-recover-*` /
+  `restic-copy-*` inside the plugin log dir) and the WebUI polls
+  every 2 s, showing the live output in a scrollable box under each
+  action. Polling auto-stops when the command finishes, or can be
+  stopped manually with the "Stop polling" button.
+- Copy Entire Repo: new dedicated "Copy Entire Repo" panel in
+  Repository Tools mirrors ALL snapshots of the selected source
+  repository into another target — across different jobs, too. Uses
+  `restic copy` with `--repo2` plus the existing `RESTIC_PASSWORD2` /
+  `*_2` env-renaming logic. Output streams into the same live log
+  viewer as check/recover.
+  * The old per-snapshot "Copy to Target" button in the snapshot
+    action bar has been removed — repo-level copy is the clearer
+    workflow.
+  * Note on excludes: `restic copy` cannot apply file-level excludes;
+    it works on snapshot granularity (packs are deduplicated as-is).
+    For a filtered mirror, configure a second target with its own
+    Optional Excludes.
+
 ## Version 2026.04.18.04
 - Bandwidth Limits per Target: each target now has optional upload and
   download rate caps (KiB/s). The limits are passed to restic as

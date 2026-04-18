@@ -1483,9 +1483,9 @@ function rbRepoJobChange() {
     var targetRow = document.getElementById('repo-target-row');
     rbRepoCtx.jobId = jobId;
     targetSel.innerHTML = '';
-    if (!jobId) { targetRow.style.display = 'none'; return; }
+    if (!jobId) { targetRow.style.display = 'none'; rbRepoCopyPopulateDstJobs(); return; }
     var panel = document.querySelector('.rb-job-panel[data-job-id="' + jobId + '"]');
-    if (!panel) { targetRow.style.display = 'none'; return; }
+    if (!panel) { targetRow.style.display = 'none'; rbRepoCopyPopulateDstJobs(); return; }
     var targets = panel.querySelectorAll('.job-targets .rb-card');
     targets.forEach(function(card) {
         var opt = document.createElement('option');
@@ -1501,6 +1501,73 @@ function rbRepoJobChange() {
     targetRow.style.display = targets.length > 1 ? '' : 'none';
     targetSel.onchange = function() { rbRepoCtx.targetId = this.value; };
     rbRepoCtx.targetId = targetSel.value;
+    rbRepoCopyPopulateDstJobs();
+}
+
+// Populate Copy-Whole-Repo destination job + target selects with every job/target
+// currently configured, minus the source target itself.
+function rbRepoCopyPopulateDstJobs() {
+    var dstJob = document.getElementById('repo-copy-dst-job');
+    if (!dstJob) return;
+    var prev = dstJob.value;
+    dstJob.innerHTML = '';
+    document.querySelectorAll('.rb-job-panel').forEach(function(panel) {
+        var id   = panel.getAttribute('data-job-id');
+        var nin  = panel.querySelector('.job-name');
+        var name = (nin && nin.value.trim()) || ('Job ' + id);
+        var opt  = document.createElement('option');
+        opt.value = id;
+        opt.textContent = name;
+        dstJob.appendChild(opt);
+    });
+    if (prev) dstJob.value = prev;
+    rbRepoCopyDstJobChange();
+}
+
+function rbRepoCopyDstJobChange() {
+    var dstJob = document.getElementById('repo-copy-dst-job');
+    var dstTgt = document.getElementById('repo-copy-dst-target');
+    if (!dstJob || !dstTgt) return;
+    dstTgt.innerHTML = '';
+    var panel = document.querySelector('.rb-job-panel[data-job-id="' + dstJob.value + '"]');
+    if (!panel) return;
+    panel.querySelectorAll('.job-targets .rb-card').forEach(function(card) {
+        var id = card.getAttribute('data-id');
+        // Skip source target
+        if (dstJob.value === rbRepoCtx.jobId && id === rbRepoCtx.targetId) return;
+        var pfx  = card.querySelector('.rb-url-pfx');
+        var url  = card.querySelector('.target-url');
+        var name = card.querySelector('.target-name');
+        var opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = (name && name.value.trim()) ||
+                          ((pfx && pfx.style.display !== 'none' ? pfx.textContent : '') + (url ? url.value.trim() : '')) ||
+                          'Target';
+        dstTgt.appendChild(opt);
+    });
+}
+
+function rbRepoCopyAll() {
+    if (!rbRepoRequire()) return;
+    var dstJob = document.getElementById('repo-copy-dst-job').value;
+    var dstTgt = document.getElementById('repo-copy-dst-target').value;
+    if (!dstTgt) { rbRepoShow('repo-copy-msg', 'Please pick a destination target.', 'error'); return; }
+    if (dstJob === rbRepoCtx.jobId && dstTgt === rbRepoCtx.targetId) {
+        rbRepoShow('repo-copy-msg', 'Source and destination must differ.', 'error'); return;
+    }
+    if (!confirm('Copy ALL snapshots from the selected source to the destination repository?\n\nNote: for best dedup the destination should have been initialised with `restic init --copy-chunker-params`.')) return;
+    rbRepoShow('repo-copy-msg', 'Starting copy…', 'warn');
+    rbAjax('snapshot_copy', {
+        job_id:        rbRepoCtx.jobId,
+        src_target_id: rbRepoCtx.targetId,
+        dst_job_id:    dstJob,
+        dst_target_id: dstTgt,
+        snapshot_ids:  []   // empty = copy all
+    }, function(resp) {
+        var started = resp && (resp.status === 'started' || resp.status === 'success');
+        rbRepoShow('repo-copy-msg', (resp && resp.message) || 'Started', started ? 'ok' : 'error');
+        if (started && resp.logfile) rbRepoStartPoll('copy', resp.logfile);
+    });
 }
 
 function rbRepoShow(id, text, tone) {
@@ -1562,14 +1629,63 @@ function rbRepoUnlock() {
     });
 }
 
+// Poll handles keyed by tool name ("check" / "recover"), so we can stop them.
+var rbRepoPollTimers = {};
+
+function rbRepoToolStop(tool) {
+    if (rbRepoPollTimers[tool]) {
+        clearInterval(rbRepoPollTimers[tool]);
+        rbRepoPollTimers[tool] = null;
+    }
+    var btn = document.getElementById('repo-' + tool + '-stop');
+    if (btn) btn.style.display = 'none';
+}
+
+function rbRepoStartPoll(tool, logfile) {
+    rbRepoToolStop(tool);
+    var outEl  = document.getElementById('repo-' + tool + '-out');
+    var msgEl  = document.getElementById('repo-' + tool + '-msg');
+    var stopBt = document.getElementById('repo-' + tool + '-stop');
+    if (!outEl || !logfile) return;
+    outEl.style.display = '';
+    outEl.textContent = '(waiting for output…)';
+    if (stopBt) stopBt.style.display = '';
+
+    var tick = function() {
+        rbAjax('repo_tool_log', { logfile: logfile }, function(resp) {
+            if (!resp) return;
+            if (resp.status === 'error') {
+                outEl.textContent = 'Error: ' + (resp.message || 'cannot read log');
+                rbRepoToolStop(tool);
+                return;
+            }
+            var text = (resp.text || '').replace(/\r/g, '');
+            // Keep scroll at bottom if user hasn't scrolled up
+            var atBottom = (outEl.scrollTop + outEl.clientHeight + 30 >= outEl.scrollHeight);
+            outEl.textContent = text || '(waiting for output…)';
+            if (atBottom) outEl.scrollTop = outEl.scrollHeight;
+            if (resp.done) {
+                rbRepoShow('repo-' + tool + '-msg',
+                           /fatal|error|errors were/i.test(text) ? 'Finished with errors.' : 'Finished.',
+                           /fatal|error|errors were/i.test(text) ? 'error' : 'ok');
+                rbRepoToolStop(tool);
+            }
+        });
+    };
+    // First tick immediately, then every 2s
+    tick();
+    rbRepoPollTimers[tool] = setInterval(tick, 2000);
+}
+
 function rbRepoCheck() {
     if (!rbRepoRequire()) return;
     var subset = document.getElementById('repo-check-subset').value.trim();
     if (!confirm('Start integrity check' + (subset ? ' with subset ' + subset : '') + '? This can take a while.')) return;
     rbRepoShow('repo-check-msg', 'Starting…', 'warn');
     rbAjax('repo_check', { job_id: rbRepoCtx.jobId, target_id: rbRepoCtx.targetId, subset: subset, read_data: subset ? 0 : 0 }, function(resp) {
-        rbRepoShow('repo-check-msg', (resp && resp.message) || 'Started',
-                   resp && (resp.status === 'started' || resp.status === 'success') ? 'ok' : 'error');
+        var started = resp && (resp.status === 'started' || resp.status === 'success');
+        rbRepoShow('repo-check-msg', (resp && resp.message) || 'Started', started ? 'ok' : 'error');
+        if (started && resp.logfile) rbRepoStartPoll('check', resp.logfile);
     });
 }
 
@@ -1578,8 +1694,9 @@ function rbRepoRecover() {
     if (!confirm('Start restic recover? This scans the entire repo for orphaned pack files.')) return;
     rbRepoShow('repo-recover-msg', 'Starting…', 'warn');
     rbAjax('repo_recover', { job_id: rbRepoCtx.jobId, target_id: rbRepoCtx.targetId }, function(resp) {
-        rbRepoShow('repo-recover-msg', (resp && resp.message) || 'Started',
-                   resp && (resp.status === 'started' || resp.status === 'success') ? 'ok' : 'error');
+        var started = resp && (resp.status === 'started' || resp.status === 'success');
+        rbRepoShow('repo-recover-msg', (resp && resp.message) || 'Started', started ? 'ok' : 'error');
+        if (started && resp.logfile) rbRepoStartPoll('recover', resp.logfile);
     });
 }
 
@@ -1768,63 +1885,6 @@ function rbSnapRewritePrompt() {
     });
 }
 
-function rbSnapCopyPrompt() {
-    var ids = rbSnapSelectedIds();
-    // ids may be empty = "copy all"
-
-    if (!rbSnapCtx.jobId) {
-        rbSnapActionMsg('No job context.', 'error');
-        return;
-    }
-    var panel = document.querySelector('.rb-job-panel[data-job-id="' + rbSnapCtx.jobId + '"]');
-    if (!panel) {
-        rbSnapActionMsg('Job panel not found.', 'error');
-        return;
-    }
-    // Collect other targets as possible destinations
-    var cards = panel.querySelectorAll('.job-targets .rb-card');
-    var options = [];
-    cards.forEach(function(card) {
-        var tid = card.getAttribute('data-id');
-        if (tid === rbSnapCtx.targetId) return;
-        var name = card.querySelector('.target-name');
-        var url  = card.querySelector('.target-url');
-        var pfx  = card.querySelector('.rb-url-pfx');
-        var lbl  = (name && name.value.trim())
-                   || ((pfx && pfx.style.display !== 'none' ? pfx.textContent : '') + (url ? url.value.trim() : ''))
-                   || tid;
-        options.push({ id: tid, label: lbl });
-    });
-    if (options.length === 0) {
-        rbSnapActionMsg('No other target in this job to copy to. Add a second target first.', 'error');
-        return;
-    }
-    var listed = options.map(function(o, i) { return (i+1) + ') ' + o.label; }).join('\n');
-    var pick = prompt(
-        'Copy ' + (ids.length ? ids.length + ' selected snapshot(s)' : 'ALL snapshots') +
-        ' to which destination?\n\n' + listed + '\n\nEnter the number:',
-        '1'
-    );
-    if (pick === null) return;
-    var idx = parseInt(pick, 10) - 1;
-    if (isNaN(idx) || idx < 0 || idx >= options.length) {
-        rbSnapActionMsg('Invalid selection.', 'error');
-        return;
-    }
-    var dst = options[idx];
-    if (!confirm('Copy to "' + dst.label + '"?\n\nMake sure the destination repo has been initialized.')) return;
-
-    rbSnapActionMsg('Copy started…', 'warn');
-    rbAjax('snapshot_copy', {
-        job_id:        rbSnapCtx.jobId,
-        src_target_id: rbSnapCtx.targetId,
-        dst_target_id: dst.id,
-        snapshot_ids:  ids
-    }, function(resp) {
-        if (resp && (resp.status === 'started' || resp.status === 'success')) {
-            rbSnapActionMsg((resp.message || 'Started') + (resp.logfile ? '  (log: ' + resp.logfile + ')' : ''), 'ok');
-        } else {
-            rbSnapActionMsg('Error: ' + ((resp && resp.message) || 'unknown'), 'error');
-        }
-    });
-}
+// rbSnapCopyPrompt was removed in 2026.04.18.05 — repo-level Copy lives in
+// Repository Tools → Copy Entire Repo now. The snapshot_copy API endpoint
+// still exists and is reused by rbRepoCopyAll.
