@@ -3,11 +3,19 @@
 Restic Backup Plugin for Unraid - Backend Script
 Reads config from /boot/config/plugins/restic-backup/restic-backup.json
 Supports multiple independent backup jobs.
+
+Original-path backups (v2026.04.18.x+):
+  * Source directories are passed to restic as their absolute paths — no
+    bind-mount staging, no "." placeholder.
+  * ZFS snapshots are created, bind-mounted under STAGE_ROOT, and then
+    re-bound over their original mountpoints inside an `unshare -m` mount
+    namespace before restic runs. This way restic records the real
+    mountpoint (e.g. `/mnt/cache/appdata`) instead of a staging path.
 """
 import os
 import sys
 import json
-import shutil
+import shlex
 import subprocess
 import datetime
 import signal
@@ -19,10 +27,10 @@ import argparse
 # ==============================================================================
 
 CONFIG_FILE = "/boot/config/plugins/restic-backup/restic-backup.json"
-MOUNT_ROOT = "/tmp/restic-backup-root"
-LOCK_FILE = "/tmp/restic-backup.lock"
-PID_FILE = "/tmp/restic-backup.pid"
-LOG_DIR = "/tmp"
+STAGE_ROOT  = "/tmp/restic-stage"           # where ZFS snapshots are bound to
+LOCK_FILE   = "/tmp/restic-backup.lock"
+PID_FILE    = "/tmp/restic-backup.pid"
+LOG_DIR     = "/tmp"
 
 # ==============================================================================
 # LOGGER
@@ -94,6 +102,21 @@ def fmt(seconds):
     m, s = divmod(int(seconds), 60)
     return f"{m}m {s}s"
 
+def _unmount_tree(prefix):
+    """Lazy-unmount every active mount whose target starts with prefix,
+    longest first so that nested binds are released before their parents."""
+    try:
+        mounts = subprocess.getoutput("cat /proc/mounts").splitlines()
+        active = []
+        for l in mounts:
+            parts = l.split()
+            if len(parts) >= 2 and parts[1].startswith(prefix):
+                active.append(parts[1])
+        for m in sorted(active, key=len, reverse=True):
+            run_cmd(["umount", "-l", m], check=False)
+    except Exception:
+        pass
+
 # ==============================================================================
 # LOCK / PID
 # ==============================================================================
@@ -140,7 +163,6 @@ def build_target_env(target, general=None):
     if general is None:
         general = {}
 
-    # Password: prefer target-level, fall back to general (backward compat)
     pw_mode = target.get("password_mode") or general.get("password_mode", "file")
     if pw_mode == "file":
         pw_file = target.get("password_file") or general.get("password_file", "")
@@ -196,7 +218,21 @@ def get_target_url(target):
 # ZFS
 # ==============================================================================
 
+def _zfs_mountpoint(ds):
+    """Return the mountpoint for a ZFS dataset, falling back to /mnt/<ds>."""
+    try:
+        mp = subprocess.check_output(
+            ["zfs", "get", "-H", "-o", "value", "mountpoint", ds],
+            text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        if mp and mp not in ("-", "none", "legacy"):
+            return mp
+    except Exception:
+        pass
+    return f"/mnt/{ds}"
+
 def create_zfs_snapshots(zfs_conf):
+    """Create ZFS snapshots as configured. Returns list of (ds, snap_name)."""
     if not zfs_conf.get("enabled", False):
         return []
 
@@ -212,13 +248,11 @@ def create_zfs_snapshots(zfs_conf):
             continue
 
         if recursive:
-            # Snapshot the parent with -r so new child datasets are auto-included
             result = run_cmd(["zfs", "snapshot", "-r", f"{parent_ds}@{snap_name}"], check=False)
             if result is not True:
                 logger.warn(f"Snapshot failed {parent_ds}: {result}")
                 continue
             logger.info(f"Snapshot (recursive): {parent_ds}@{snap_name}")
-            # Enumerate all resulting children so mount_zfs_snapshots can mount each
             try:
                 all_ds = subprocess.check_output(
                     ["zfs", "list", "-H", "-r", "-o", "name", parent_ds], text=True
@@ -231,7 +265,6 @@ def create_zfs_snapshots(zfs_conf):
                 if ds:
                     created.append((ds, snap_name))
         else:
-            # Non-recursive: snapshot only the explicitly listed dataset
             result = run_cmd(["zfs", "snapshot", f"{parent_ds}@{snap_name}"], check=False)
             if result is True:
                 created.append((parent_ds, snap_name))
@@ -241,83 +274,132 @@ def create_zfs_snapshots(zfs_conf):
 
     return created
 
-def mount_zfs_snapshots(snapshots, mount_root):
-    for ds, snap_name in snapshots:
-        real_path = f"/mnt/{ds}/.zfs/snapshot/{snap_name}"
-        # Strip pool name (first segment) so the backup path mirrors the dataset
-        # hierarchy without the pool prefix.
-        # e.g. cache/appdata/crowdsec-agent → appdata/crowdsec-agent
-        parts = ds.split("/")
-        rel_path = "/".join(parts[1:]) if len(parts) > 1 else parts[0]
-        target = os.path.join(mount_root, rel_path)
-        if not os.path.exists(real_path):
-            logger.warn(f"Snapshot path missing: {real_path}")
-            continue
-        os.makedirs(target, exist_ok=True)
-        result = run_cmd(["mount", "--bind", "-o", "ro", real_path, target], check=False)
-        if result is not True:
-            logger.warn(f"Mount failed {real_path}: {result}")
-
 def destroy_zfs_snapshots(snapshots):
     for ds, snap_name in snapshots:
         run_cmd(["zfs", "destroy", f"{ds}@{snap_name}"], check=False)
 
 # ==============================================================================
-# BACKUP ENVIRONMENT
+# BACKUP ENVIRONMENT — original-path architecture
 # ==============================================================================
 
-def cleanup(snapshots=None):
-    logger.info("Cleaning up...")
-    if os.path.exists(MOUNT_ROOT):
-        try:
-            mounts = subprocess.getoutput("cat /proc/mounts").splitlines()
-            active = [l.split()[1] for l in mounts if MOUNT_ROOT in l.split()[1]]
-            for m in sorted(active, key=len, reverse=True):
-                run_cmd(["umount", "-l", m], check=False)
-        except: pass
-        try: shutil.rmtree(MOUNT_ROOT)
-        except: pass
-    if snapshots:
-        destroy_zfs_snapshots(snapshots)
-    release_lock()
+def prepare_zfs_stages(zfs_conf):
+    """
+    Create the ZFS snapshots configured for the job and bind-mount each one
+    (read-only) under STAGE_ROOT/<idx>.
 
-def prepare_job_env(job):
-    job_root = os.path.join(MOUNT_ROOT, job.get("id", "default"))
-    os.makedirs(job_root, exist_ok=True)
+    Returns (snapshots, stages) where:
+      * snapshots = [(ds, snap_name), ...] — for cleanup/destroy
+      * stages    = [(original_mountpoint, stage_path), ...] — for the
+        mount-namespace remap in run_backup_attempt()
+    """
+    if not zfs_conf.get("enabled", False):
+        return [], []
 
-    # Mount sources
+    os.makedirs(STAGE_ROOT, exist_ok=True)
+    snapshots = create_zfs_snapshots(zfs_conf)
+    stages = []
+
+    for idx, (ds, snap_name) in enumerate(snapshots):
+        real_path  = f"/mnt/{ds}/.zfs/snapshot/{snap_name}"
+        stage_path = os.path.join(STAGE_ROOT, str(idx))
+        if not os.path.exists(real_path):
+            logger.warn(f"Snapshot path missing: {real_path}")
+            continue
+        os.makedirs(stage_path, exist_ok=True)
+        result = run_cmd(["mount", "--bind", "-o", "ro", real_path, stage_path], check=False)
+        if result is not True:
+            logger.warn(f"Stage mount failed {real_path}: {result}")
+            continue
+        original_mp = _zfs_mountpoint(ds)
+        stages.append((original_mp, stage_path))
+        logger.info(f"Stage: {real_path} -> {stage_path}  (will appear as {original_mp})")
+
+    return snapshots, stages
+
+def collect_direct_paths(job):
+    """Return the list of paths to back up directly — no binds, no staging."""
+    paths = []
+    seen  = set()
+
     for src in job.get("sources", []):
         if not src.get("enabled", True):
             continue
-        path = src.get("path", "")
-        label = src.get("label", "") or os.path.basename(path)
-        if not path or not os.path.exists(path):
+        path = (src.get("path") or "").rstrip("/")
+        if not path:
+            continue
+        if not os.path.exists(path):
             logger.warn(f"Source missing: {path}")
             continue
-        target = os.path.join(job_root, label)
-        os.makedirs(target, exist_ok=True)
-        result = run_cmd(["mount", "--bind", "-o", "ro", path, target], check=False)
-        if result is True:
-            logger.info(f"Source: {path} -> {label}")
-        else:
-            logger.warn(f"Mount failed {path}: {result}")
+        if path not in seen:
+            paths.append(path)
+            seen.add(path)
 
-    # /boot (Unraid USB key) — bind-mount read-only as boot/
     if job.get("backup_boot", False):
-        boot_target = os.path.join(job_root, "boot")
-        os.makedirs(boot_target, exist_ok=True)
-        result = run_cmd(["mount", "--bind", "-o", "ro", "/boot", boot_target], check=False)
-        if result is True:
-            logger.info("Source: /boot -> boot/")
-        else:
-            logger.warn(f"Mount /boot failed: {result}")
+        if os.path.exists("/boot") and "/boot" not in seen:
+            paths.append("/boot")
+            seen.add("/boot")
 
-    # ZFS Snapshots
-    snapshots = create_zfs_snapshots(job.get("zfs", {}))
-    if snapshots:
-        mount_zfs_snapshots(snapshots, job_root)
+    return paths
 
-    return job_root, snapshots
+def build_backup_argv(cmd_head, paths):
+    """
+    Assemble the final argv for `restic backup ...`. Expects cmd_head to end
+    at the point where paths should be appended (i.e. after excludes/tags).
+    """
+    return list(cmd_head) + list(paths)
+
+def run_backup_attempt(cmd_args, env, stages):
+    """
+    Execute the restic backup command.
+
+    * No ZFS stages → just run restic directly.
+    * With stages → spawn `unshare -m` and bind-mount each staging path over
+      its original mountpoint inside the new namespace, then exec restic.
+      restic then records the ORIGINAL mountpoint (e.g. /mnt/cache/appdata)
+      in the snapshot instead of /tmp/restic-stage/<idx>.
+    """
+    if not stages:
+        return run_cmd(cmd_args, check=False, env=env)
+
+    script_lines = ["set -e"]
+    for (original, stage) in stages:
+        script_lines.append(f"mkdir -p {shlex.quote(original)}")
+        script_lines.append(
+            f"mount --bind -o ro {shlex.quote(stage)} {shlex.quote(original)}"
+        )
+    quoted_restic = " ".join(shlex.quote(a) for a in cmd_args)
+    script_lines.append(f"exec {quoted_restic}")
+    script = "\n".join(script_lines)
+
+    wrapped = [
+        "unshare", "-m", "--propagation", "private",
+        "bash", "-c", script,
+    ]
+    return run_cmd(wrapped, check=False, env=env)
+
+def cleanup_global():
+    """Clear anything left over from a previous run — stage mounts + snapshots."""
+    logger.info("Cleaning up...")
+    if os.path.exists(STAGE_ROOT):
+        _unmount_tree(STAGE_ROOT)
+        try:
+            import shutil
+            shutil.rmtree(STAGE_ROOT, ignore_errors=True)
+        except Exception:
+            pass
+    # Also clean any leftover temp-snap ZFS snapshots from crashed runs
+    try:
+        out = subprocess.check_output(
+            ["zfs", "list", "-H", "-t", "snapshot", "-o", "name"],
+            text=True, stderr=subprocess.DEVNULL
+        ).splitlines()
+        for line in out:
+            line = line.strip()
+            if "@restic-backup-" in line:
+                run_cmd(["zfs", "destroy", line], check=False)
+    except Exception:
+        pass
+    release_lock()
 
 # ==============================================================================
 # RUN JOB
@@ -328,17 +410,29 @@ def run_job(config, job):
     logger.info(f"=== Job: {job_name} ===")
     t_job = time.time()
 
-    general = config.get("general", {})
-    targets = job.get("targets", [])
-    excludes = job.get("excludes", {})
-    retention = job.get("retention", {})
-    check_conf = job.get("check", {})
+    general     = config.get("general", {})
+    targets     = job.get("targets", [])
+    excludes    = job.get("excludes", {})
+    retention   = job.get("retention", {})
+    check_conf  = job.get("check", {})
     max_retries = job.get("max_retries", 3)
-    retry_wait = job.get("retry_wait", 30)
-    hostname = general.get("hostname", "")
-    tags = job.get("tags", "")
+    retry_wait  = job.get("retry_wait", 30)
+    hostname    = general.get("hostname", "")
+    tags        = job.get("tags", "")
 
-    job_root, snapshots = prepare_job_env(job)
+    direct_paths = collect_direct_paths(job)
+    snapshots, stages = prepare_zfs_stages(job.get("zfs", {}))
+
+    # Final list of paths passed to restic — always absolute.
+    # Stage paths surface to restic as their original mountpoints.
+    all_paths = list(direct_paths) + [original for (original, _stage) in stages]
+    if not all_paths:
+        logger.warn(f"Job '{job_name}' has no enabled sources. Skipping.")
+        # Still need to clean up any ZFS snapshots that might have been taken
+        if snapshots:
+            destroy_zfs_snapshots(snapshots)
+        return 0, 0
+
     success = 0
     fail = 0
 
@@ -357,28 +451,31 @@ def run_job(config, job):
             t_repo = time.time()
 
             sftp_opts = get_sftp_opts(target)
-            cmd = ["restic", "-r", url] + sftp_opts + ["backup", "."]
+            cmd_head = ["restic", "-r", url] + sftp_opts + ["backup"]
             if tags:
-                cmd.extend(["--tag", tags])
+                cmd_head.extend(["--tag", tags])
             if hostname:
-                cmd.extend(["--host", hostname])
+                cmd_head.extend(["--host", hostname])
 
             for ex in excludes.get("global", []):
                 ex = ex.strip()
-                if ex: cmd.append(f"--exclude={ex}")
+                if ex: cmd_head.append(f"--exclude={ex}")
 
             if target.get("use_optional_excludes", False):
                 logger.info("  Applying optional excludes")
                 for ex in excludes.get("optional", []):
                     ex = ex.strip()
-                    if ex: cmd.append(f"--exclude={ex}")
+                    if ex: cmd_head.append(f"--exclude={ex}")
 
-            # Upload
+            # Append paths last, exactly as restic expects
+            cmd = build_backup_argv(cmd_head, all_paths)
+
             logger.info("  Uploading...")
+            logger.info("  Paths: " + ", ".join(all_paths))
             t_up = time.time()
             ok = False
             for attempt in range(1, max_retries + 1):
-                result = run_cmd(cmd, cwd=job_root, check=False, env=target_env)
+                result = run_backup_attempt(cmd, target_env, stages)
                 if result is True:
                     ok = True
                     break
@@ -393,8 +490,14 @@ def run_job(config, job):
             if ok:
                 logger.info(f"  Upload done ({up_dur})")
 
-                # Retention / Prune
+                # Retention / Prune — restricted to this job's tag when set
                 prune_cmd = ["restic", "-r", url] + sftp_opts + ["forget", "--prune"]
+                if tags:
+                    # Use the first tag as the isolation key for forget so that
+                    # multiple jobs sharing one repository don't prune each other.
+                    first_tag = tags.split(",")[0].strip()
+                    if first_tag:
+                        prune_cmd.extend(["--tag", first_tag])
                 kd = retention.get("keep_daily", 7)
                 kw = retention.get("keep_weekly", 4)
                 km = retention.get("keep_monthly", 0)
@@ -445,16 +548,9 @@ def run_job(config, job):
                 fail += 1
 
     finally:
-        # Cleanup job-specific mounts
-        if os.path.exists(job_root):
-            try:
-                mounts = subprocess.getoutput("cat /proc/mounts").splitlines()
-                active = [l.split()[1] for l in mounts if job_root in l.split()[1]]
-                for m in sorted(active, key=len, reverse=True):
-                    run_cmd(["umount", "-l", m], check=False)
-            except: pass
-            try: shutil.rmtree(job_root)
-            except: pass
+        # Unmount + destroy ZFS snapshots belonging to this job
+        if stages:
+            _unmount_tree(STAGE_ROOT)
         if snapshots:
             destroy_zfs_snapshots(snapshots)
 
@@ -474,7 +570,7 @@ def do_backup(config, job_id=None):
         sys.exit(1)
 
     setup_notifications(config)
-    os.makedirs(MOUNT_ROOT, exist_ok=True)
+    os.makedirs(STAGE_ROOT, exist_ok=True)
 
     total_ok = 0
     total_fail = 0
@@ -494,7 +590,7 @@ def do_backup(config, job_id=None):
         logger.notify("Restic Backup", f"Aborted: {e}", "alert")
         total_fail += 1
     finally:
-        cleanup()
+        cleanup_global()
 
     dur = fmt(time.time() - t_start)
     if total_fail == 0 and total_ok > 0:
@@ -551,7 +647,7 @@ def main():
 if __name__ == "__main__":
     def signal_handler(sig, frame):
         print("\nAborting...")
-        cleanup()
+        cleanup_global()
         sys.exit(0)
     signal.signal(signal.SIGINT, signal_handler)
     sys.exit(main())

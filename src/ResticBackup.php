@@ -91,14 +91,29 @@ $jobs = $config['jobs'] ?? [];
 textarea.rb-excludes { width: 100%; max-width: 680px; height: 130px; font-family: monospace; font-size: 12px; background: var(--bg-secondary); color: var(--text); border: 1px solid var(--border-inner); padding: 8px; resize: vertical; border-radius: 4px; }
 textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
 
-/* Inline directory browser (source picker) */
-.rb-tree { border: 1px solid var(--border-inner); border-radius: 4px; background: var(--bg-log); max-height: 300px; overflow-y: auto; margin-top: 4px; margin-bottom: 8px; max-width: 500px; }
+/* Inline directory / file browser (source + password picker) */
+.rb-tree { border: 1px solid var(--border-inner); border-radius: 4px; background: var(--bg-log); max-height: 320px; overflow-y: auto; margin-top: 4px; margin-bottom: 8px; max-width: 560px; }
 .rb-tree-item { padding: 5px 10px; cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 12px; }
 .rb-tree-item:hover { background: var(--bg-hover); }
 .rb-tree-item.rb-tree-up { color: var(--accent); font-weight: bold; }
-.rb-tree-item .rb-tree-icon { width: 16px; text-align: center; color: var(--yellow); }
-.rb-tree-hdr { padding: 6px 10px; border-bottom: 1px solid var(--border-inner); display: flex; justify-content: space-between; align-items: center; background: var(--bg-secondary); font-size: 12px; }
-.rb-tree-hdr .rb-tree-path { font-family: monospace; color: var(--accent); }
+.rb-tree-item.rb-tree-file { color: var(--text); }
+.rb-tree-item.picked { background: rgba(240,140,0,.18); outline: 1px solid var(--accent); }
+.rb-tree-item .rb-tree-icon { width: 16px; text-align: center; color: var(--yellow); flex-shrink: 0; }
+.rb-tree-item .rb-tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.rb-tree-item .rb-tree-size { color: var(--text-muted); font-size: 11px; white-space: nowrap; margin-left: auto; padding-left: 6px; flex-shrink: 0; }
+.rb-tree-hdr { padding: 6px 10px; border-bottom: 1px solid var(--border-inner); display: flex; flex-wrap: wrap; justify-content: flex-start; align-items: center; gap: 6px; background: var(--bg-secondary); font-size: 12px; }
+.rb-tree-hdr .rb-tree-path { font-family: monospace; color: var(--accent); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rb-tree-hdr .rb-tree-roots { display: flex; gap: 4px; flex-shrink: 0; }
+
+/* Scroll wrapper for snapshot list table */
+.snapshots-scroll { max-height: 420px; overflow-y: auto; border: 1px solid var(--border-inner); border-radius: 4px; }
+.snapshots-scroll table { margin-top: 0 !important; }
+.snapshots-scroll thead th { position: sticky; top: 0; z-index: 2; }
+.snapshots-scroll::-webkit-scrollbar { width: 8px; }
+.snapshots-scroll::-webkit-scrollbar-track { background: var(--bg-secondary); }
+.snapshots-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.snapshots-scroll::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+.snapshots-scroll { scrollbar-width: thin; scrollbar-color: var(--border) var(--bg-secondary); }
 
 /* Dataset picker */
 .rb-ds-list { max-height: 250px; overflow-y: auto; border: 1px solid var(--border-inner); border-radius: 4px; padding: 6px; background: var(--bg-log); }
@@ -127,6 +142,80 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
 .snap-enter-btn { background: none; border: none; color: #58a6ff; cursor: pointer; padding: 0 4px; font-size: 13px; flex-shrink: 0; }
 .snap-enter-btn:hover { color: var(--accent-hover); }
 .snap-check { accent-color: #58a6ff; flex-shrink: 0; cursor: pointer; }
+
+/* =====================================================================
+ * RESPONSIVE DESIGN
+ * =================================================================== */
+/* Tablet: collapse 2-col grid earlier already handled at 1100px.
+   Below tablet, tighten spacing, let labels stack above inputs. */
+@media (max-width: 768px) {
+    .rb-grid { gap: 0; }
+    .rb-section-body { padding: 10px 12px; }
+    .rb-section-hdr { padding: 9px 12px; font-size: 12.5px; }
+
+    /* Stack label above input for more horizontal room */
+    .rb-row { flex-direction: column; align-items: stretch; gap: 4px; min-height: 0; margin-bottom: 10px; }
+    .rb-row label { min-width: 0; width: 100%; }
+    .rb-row input[type="text"], .rb-row input[type="number"],
+    .rb-row input[type="password"], .rb-row select {
+        width: 100%; max-width: 100%; min-width: 0; flex: 1 1 auto;
+    }
+    .rb-url-wrap { max-width: 100%; }
+    /* Hints live on their own line below the input */
+    .rb-hint { padding-left: 0; margin-top: 2px; }
+
+    /* Retention grid: 2 columns on phones */
+    .rb-retention-grid { grid-template-columns: repeat(2, 1fr); }
+
+    /* File/dir picker fills width */
+    .rb-tree { max-width: 100%; }
+    .rb-tree-hdr { flex-wrap: wrap; }
+
+    /* Snapshot browser full-width */
+    #snap-browser-list { max-width: 100% !important; }
+
+    /* Snapshot table: hide the Tags column to save horizontal space */
+    .rb-snap-table th:nth-child(4),
+    .rb-snap-table td:nth-child(4) { display: none; }
+
+    /* Job tabs: allow wrapping instead of horizontal overflow */
+    .rb-job-tabs { gap: 3px; }
+    .rb-job-tab { padding: 5px 10px; font-size: 12px; }
+
+    /* Log area: use more of the viewport height */
+    #rb-log { height: 260px; }
+
+    /* Controls row: let the job-select + refresh wrap to its own line */
+    .rb-row > #rb-job-select,
+    .rb-row > #btn-start,
+    .rb-row > #btn-stop { width: 100%; }
+}
+
+@media (max-width: 480px) {
+    .rb-wrap { font-size: 13px; }
+    .rb-section-hdr { padding: 8px 10px; font-size: 12px; }
+    .rb-section-body { padding: 8px 10px; }
+    .rb-card { padding: 9px; }
+
+    /* Retention: single column */
+    .rb-retention-grid { grid-template-columns: 1fr; }
+
+    /* Snapshot table: also hide hostname to keep ID + Date + action readable */
+    .rb-snap-table th:nth-child(3),
+    .rb-snap-table td:nth-child(3) { display: none; }
+
+    /* Buttons in card header: shrink */
+    .rb-card-hdr { flex-wrap: wrap; gap: 4px; }
+    .rb-btn-sm { padding: 2px 6px; font-size: 10.5px; }
+    .rb-btn { padding: 5px 10px; font-size: 12px; }
+
+    /* Save-button row: stretch */
+    .rb-wrap > div[style*="margin:14px 0"] { flex-direction: column; align-items: stretch !important; gap: 8px !important; }
+    .rb-wrap > div[style*="margin:14px 0"] .rb-btn { width: 100%; }
+
+    #rb-log { height: 220px; font-size: 11px; }
+    textarea.rb-excludes { height: 110px; }
+}
 </style>
 
 <div class="rb-wrap">
@@ -244,7 +333,7 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                                 </div>
                                 <div class="target-pw-file-row rb-row"<?= $tpwmode !== 'file' ? ' style="display:none;"' : '' ?>>
                                     <label>Password File:</label>
-                                    <input type="text" class="target-pw-file" value="<?= htmlspecialchars($tpwfile) ?>" placeholder="/boot/config/plugins/restic-backup/password.txt" data-picktree="file" autocomplete="off">
+                                    <input type="text" class="target-pw-file" value="<?= htmlspecialchars($tpwfile) ?>" placeholder="Path to password file …" data-picktree="file" autocomplete="off">
                                 </div>
                                 <div class="target-pw-inline-row rb-row"<?= $tpwmode !== 'inline' ? ' style="display:none;"' : '' ?>>
                                     <label>Password:</label>
@@ -433,7 +522,7 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
         <div class="rb-row" style="margin-top:8px;gap:6px;flex-wrap:wrap;">
             <button id="btn-start" class="rb-btn rb-btn-accent" onclick="rbStartBackup()" <?= $running ? 'disabled' : '' ?>>&#9654; Start Backup</button>
             <button id="btn-stop" class="rb-btn rb-btn-red" onclick="rbStopBackup()" <?= !$running ? 'disabled' : '' ?>>&#9632; Stop</button>
-            <select id="rb-job-select" style="padding:4px 8px;font-size:13px;background:var(--bg-secondary);color:var(--text);border:1px solid var(--border-inner);border-radius:4px;">
+            <select id="rb-job-select" onchange="rbRefreshLog()" title="Select which job to run manually" style="padding:4px 8px;font-size:13px;background:var(--bg-secondary);color:var(--text);border:1px solid var(--border-inner);border-radius:4px;">
                 <option value="">All Jobs</option>
                 <?php foreach ($jobs as $j): ?>
                 <option value="<?= htmlspecialchars($j['id']) ?>"><?= htmlspecialchars($j['name'] ?: 'Unnamed') ?></option>
@@ -497,10 +586,12 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
 
         <!-- Snapshot list -->
         <div id="snap-list" style="display:none;">
-            <table class="rb-snap-table">
-                <thead><tr><th>ID</th><th>Date</th><th>Hostname</th><th>Tags</th><th></th></tr></thead>
-                <tbody id="snap-tbody"></tbody>
-            </table>
+            <div class="snapshots-scroll">
+                <table class="rb-snap-table">
+                    <thead><tr><th>ID</th><th>Date</th><th>Hostname</th><th>Tags</th><th></th></tr></thead>
+                    <tbody id="snap-tbody"></tbody>
+                </table>
+            </div>
         </div>
 
         <!-- Snapshot browser -->

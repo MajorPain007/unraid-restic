@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "restic-backup">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.04.12.24">
-<!ENTITY md5       "280b356b644fe43ce823aaf72b4450b5">
+<!ENTITY version   "2026.04.18.01">
+<!ENTITY md5       "1465a577248d2eefe582f1e7faffc83c">
 <!ENTITY launch    "Settings/ResticBackup">
 <!ENTITY github    "MajorPain007/unraid-restic">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/src/&name;.plg">
@@ -21,6 +21,27 @@
         icon="shield">
 
 <CHANGES>
+## Version 2026.04.18.01
+- Original source paths: restic now records real mountpoints (e.g.
+  `/mnt/cache/appdata`) instead of staging paths like `/tmp/.../appdata`.
+  * Direct sources are passed as absolute paths — no bind-mount staging.
+  * ZFS snapshots are staged under `/tmp/restic-stage/[idx]` and then
+    re-bound over their original mountpoint inside an `unshare -m` mount
+    namespace so that restic sees the original path.
+- File/folder picker: the password-file input now opens a file browser
+  (files + folders) instead of directories only. Single click on a file
+  highlights it, double click picks it and closes the picker. Quick
+  buttons for `/mnt/` and `/boot/` root shortcuts.
+- Password-file placeholder no longer pre-suggests "password.txt".
+- Manual-run job selector hooked up to the Start button so "Start Backup"
+  runs only the selected job ("All Jobs" still runs every enabled job).
+- Snapshot list: now scrolls inside a 420px-high container with sticky
+  header so many snapshots stay navigable without eating the whole page.
+- Responsive design: new breakpoints at 768px and 480px — on phones the
+  grid becomes single-column, labels stack above inputs, retention grid
+  collapses, unneeded snapshot-table columns are hidden.
+- build.sh: MD5 fallback to `md5sum` on Linux.
+
 ## Version 2026.04.12.03
 - Add per-type credential fields: S3 (Access Key, Secret, Region),
   B2 (Account ID, Application Key), REST (Username, Password)

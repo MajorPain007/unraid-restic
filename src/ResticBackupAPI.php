@@ -294,7 +294,13 @@ switch ($action) {
         break;
 
     // =========================================================================
-    // BROWSE DIRECTORIES
+    // BROWSE DIRECTORIES / FILES
+    //
+    // Parameters:
+    //   path: absolute path to list (default /mnt)
+    //   mode: 'dirs' (default) | 'files' — in 'files' mode, the response
+    //         additionally contains a files[] array so the frontend can show
+    //         selectable files alongside subdirectories.
     // =========================================================================
     case 'browse':
         $path = $data['path'] ?? '/mnt';
@@ -302,12 +308,17 @@ switch ($action) {
         if (!$path || $path[0] !== '/') {
             $path = '/mnt';
         }
-        $dirs = restic_list_dirs($path);
-        echo json_encode([
+        $mode  = $data['mode'] ?? 'dirs';
+        $dirs  = restic_list_dirs($path);
+        $resp  = [
             'current' => $path,
             'parent'  => dirname($path),
             'dirs'    => $dirs,
-        ]);
+        ];
+        if ($mode === 'files' || $mode === 'both') {
+            $resp['files'] = restic_list_files($path);
+        }
+        echo json_encode($resp);
         break;
 
     // =========================================================================

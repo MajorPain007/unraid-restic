@@ -71,7 +71,11 @@ mkdir -p "${ARCHIVE_DIR}"
 PKG="${PLUGIN}-${VERSION}-x86_64-1.txz"
 ( cd "${STAGE}" && COPYFILE_DISABLE=1 tar --no-xattrs -cJf "${ARCHIVE_DIR}/${PKG}" install/ usr/ )
 
-MD5=$(md5 -q "${ARCHIVE_DIR}/${PKG}")
+if command -v md5 >/dev/null 2>&1; then
+    MD5=$(md5 -q "${ARCHIVE_DIR}/${PKG}")
+else
+    MD5=$(md5sum "${ARCHIVE_DIR}/${PKG}" | awk '{print $1}')
+fi
 
 echo ""
 echo "Done!"

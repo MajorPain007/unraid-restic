@@ -216,6 +216,38 @@ function restic_list_dirs(string $path): array {
 }
 
 /**
+ * List regular files at a given path.
+ * Returns array of ['path' => full, 'name' => basename, 'size' => bytes].
+ * Hidden files (starting with '.') are skipped.
+ */
+function restic_list_files(string $path): array {
+    $path = rtrim($path, '/');
+    if (!is_dir($path)) {
+        return [];
+    }
+    $files = [];
+    $items = @scandir($path);
+    if ($items === false) {
+        return [];
+    }
+    foreach ($items as $item) {
+        if ($item === '.' || $item === '..') continue;
+        if ($item[0] === '.') continue;
+        $full = $path . '/' . $item;
+        if (is_file($full)) {
+            $files[] = [
+                'path' => $full,
+                'name' => $item,
+                'size' => @filesize($full) ?: 0,
+            ];
+        }
+    }
+    // sort by name
+    usort($files, function($a, $b) { return strcasecmp($a['name'], $b['name']); });
+    return $files;
+}
+
+/**
  * Build a shell env-var prefix string from an associative array.
  * Keys must be [A-Z_][A-Z0-9_]* to be included.
  */

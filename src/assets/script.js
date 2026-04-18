@@ -233,7 +233,7 @@ function rbAddTarget(btn) {
         + '<option value="inline">Inline Password</option>'
         + '</select></div>'
         + '<div class="target-pw-file-row rb-row"><label>Password File:</label>'
-        + '<input type="text" class="target-pw-file" placeholder="/boot/config/plugins/restic-backup/password.txt" data-picktree="file" autocomplete="off"></div>'
+        + '<input type="text" class="target-pw-file" placeholder="Path to password file …" data-picktree="file" autocomplete="off"></div>'
         + '<div class="target-pw-inline-row rb-row" style="display:none;"><label>Password:</label>'
         + '<input type="password" class="target-pw-inline" placeholder="Repository password" autocomplete="off"></div>'
         + '<div class="rb-row"><label>Name:</label><input type="text" class="target-name" value="" placeholder="e.g. Hetzner Cloud"></div>'
@@ -260,7 +260,10 @@ function rbAddSource(btn) {
 }
 
 // =============================================================================
-// INLINE DIRECTORY PICKER - appears below input on click
+// INLINE PICKER - appears below input on click
+// Supports two modes:
+//   data-picktree="dir"  → directory picker (default)
+//   data-picktree="file" → file picker (shows files alongside folders)
 // =============================================================================
 function rbInitPickTree() {
     document.querySelectorAll('[data-picktree]').forEach(function(input) {
@@ -284,19 +287,35 @@ function rbCloseTree() {
 function rbOpenTree(input) {
     rbCloseTree();
 
+    var mode = input.getAttribute('data-picktree') === 'file' ? 'file' : 'dir';
+
     var startPath = input.value || '/mnt';
-    if (startPath !== '/' && startPath.charAt(startPath.length - 1) !== '/') {
-        var lastSlash = startPath.lastIndexOf('/');
-        if (lastSlash > 0) startPath = startPath.substring(0, lastSlash);
+    if (mode === 'file') {
+        // For file mode: if current value points to a file, open its parent folder
+        if (startPath && startPath !== '/' && startPath.charAt(startPath.length - 1) !== '/') {
+            var lastSlash = startPath.lastIndexOf('/');
+            if (lastSlash > 0) startPath = startPath.substring(0, lastSlash);
+            else startPath = '/mnt';
+        }
+    } else {
+        if (startPath !== '/' && startPath.charAt(startPath.length - 1) !== '/') {
+            var lastSlash2 = startPath.lastIndexOf('/');
+            if (lastSlash2 > 0) startPath = startPath.substring(0, lastSlash2);
+        }
     }
 
     var tree = document.createElement('div');
     tree.className = 'rb-tree';
 
+    var selectLabel = mode === 'file' ? 'Select File' : 'Select Folder';
     var hdr = document.createElement('div');
     hdr.className = 'rb-tree-hdr';
     hdr.innerHTML = '<span class="rb-tree-path">' + escHtml(startPath) + '</span>'
-        + ' <button class="rb-btn rb-btn-green rb-btn-sm" style="margin-left:8px;" onclick="rbTreeSelect()">Select</button>'
+        + ' <span class="rb-tree-roots">'
+        +   '<button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbTreeGoto(\'/mnt\')">/mnt</button>'
+        +   '<button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbTreeGoto(\'/boot\')">/boot</button>'
+        + '</span>'
+        + ' <button class="rb-btn rb-btn-green rb-btn-sm" style="margin-left:8px;" onclick="rbTreeSelect()">' + selectLabel + '</button>'
         + ' <button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbCloseTree()">Close</button>';
     tree.appendChild(hdr);
 
@@ -308,7 +327,9 @@ function rbOpenTree(input) {
     input.closest('.rb-row').after(tree);
     rbActiveTree = tree;
     tree._rbInput = input;
-    tree._rbPath = startPath;
+    tree._rbPath  = startPath;
+    tree._rbMode  = mode;
+    tree._rbPick  = null; // selected file path in file-mode
 
     rbLoadTree(tree, startPath);
 
@@ -323,10 +344,25 @@ function rbTreeOutsideClick(e) {
     }
 }
 
+function rbTreeGoto(path) {
+    if (!rbActiveTree) return;
+    rbActiveTree._rbPath = path;
+    rbActiveTree._rbPick = null;
+    rbActiveTree.querySelector('.rb-tree-path').textContent = path;
+    rbLoadTree(rbActiveTree, path);
+}
+
 function rbTreeSelect() {
     if (rbActiveTree && rbActiveTree._rbInput) {
-        var path = rbActiveTree._rbPath.replace(/\/+$/, '') || '/';
-        rbActiveTree._rbInput.value = path;
+        var val;
+        if (rbActiveTree._rbMode === 'file') {
+            // In file-mode: prefer the picked file; otherwise fall back to current dir
+            val = rbActiveTree._rbPick || rbActiveTree._rbPath;
+        } else {
+            val = rbActiveTree._rbPath;
+        }
+        val = (val || '/').replace(/\/+$/, '') || '/';
+        rbActiveTree._rbInput.value = val;
     }
     rbCloseTree();
 }
@@ -335,35 +371,65 @@ function rbLoadTree(tree, path) {
     var list = tree.querySelector('.rb-tree-list');
     list.innerHTML = '<div style="padding:8px;color:var(--text-muted);">Loading...</div>';
 
-    rbAjax('browse', { path: path }, function(resp) {
+    var mode = tree._rbMode === 'file' ? 'files' : 'dirs';
+
+    rbAjax('browse', { path: path, mode: mode }, function(resp) {
         tree._rbPath = resp.current || path;
+        tree._rbPick = null;
         tree.querySelector('.rb-tree-path').textContent = tree._rbPath;
 
         var html = '';
         if (resp.parent && resp.parent !== resp.current) {
-            html += '<div class="rb-tree-item rb-tree-up" data-path="' + escAttr(resp.parent) + '">'
+            html += '<div class="rb-tree-item rb-tree-up" data-path="' + escAttr(resp.parent) + '" data-is-dir="1">'
                 + '<span class="rb-tree-icon">&#8593;</span> ..</div>';
         }
 
         var dirs = resp.dirs || [];
-        if (dirs.length === 0 && !resp.parent) {
-            html = '<div style="padding:8px;color:var(--text-muted);">No directories found</div>';
-        }
         dirs.forEach(function(d) {
             var name = d.split('/').pop();
-            html += '<div class="rb-tree-item" data-path="' + escAttr(d) + '">'
-                + '<span class="rb-tree-icon">&#128193;</span> ' + escHtml(name) + '</div>';
+            html += '<div class="rb-tree-item" data-path="' + escAttr(d) + '" data-is-dir="1">'
+                + '<span class="rb-tree-icon">&#128193;</span>'
+                + '<span class="rb-tree-name">' + escHtml(name) + '</span></div>';
         });
+
+        var files = resp.files || [];
+        files.forEach(function(f) {
+            html += '<div class="rb-tree-item rb-tree-file" data-path="' + escAttr(f.path) + '" data-is-dir="0">'
+                + '<span class="rb-tree-icon">&#128196;</span>'
+                + '<span class="rb-tree-name">' + escHtml(f.name) + '</span>'
+                + '<span class="rb-tree-size">' + rbFmtBytes(f.size) + '</span></div>';
+        });
+
+        if (dirs.length === 0 && files.length === 0 && !resp.parent) {
+            html = '<div style="padding:8px;color:var(--text-muted);">No entries found</div>';
+        }
 
         list.innerHTML = html;
 
         list.querySelectorAll('.rb-tree-item').forEach(function(item) {
+            var isDir = item.getAttribute('data-is-dir') === '1';
             item.addEventListener('click', function() {
                 var p = item.getAttribute('data-path');
-                tree._rbPath = p;
-                tree.querySelector('.rb-tree-path').textContent = p;
-                rbLoadTree(tree, p);
+                if (isDir) {
+                    tree._rbPath = p;
+                    tree._rbPick = null;
+                    tree.querySelector('.rb-tree-path').textContent = p;
+                    rbLoadTree(tree, p);
+                } else {
+                    // File click → highlight (single-click selects, does not close)
+                    list.querySelectorAll('.rb-tree-item.picked').forEach(function(n) { n.classList.remove('picked'); });
+                    item.classList.add('picked');
+                    tree._rbPick = p;
+                    tree.querySelector('.rb-tree-path').textContent = p;
+                }
             });
+            // Double-click on a file = immediately pick and close
+            if (!isDir) {
+                item.addEventListener('dblclick', function() {
+                    tree._rbPick = item.getAttribute('data-path');
+                    rbTreeSelect();
+                });
+            }
         });
     }, function(err) {
         list.innerHTML = '<div style="padding:8px;color:var(--red);">Error: ' + escHtml(err) + '</div>';
