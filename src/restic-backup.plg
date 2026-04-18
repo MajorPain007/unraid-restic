@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "restic-backup">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.04.18.06">
-<!ENTITY md5       "cd25f319817d930f702c914e40d7b413">
+<!ENTITY version   "2026.04.18.07">
+<!ENTITY md5       "cc0cdd0505f8951741e2bc68ab9df637">
 <!ENTITY launch    "Settings/ResticBackup">
 <!ENTITY github    "MajorPain007/unraid-restic">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/src/&name;.plg">
@@ -22,6 +22,22 @@
         icon="shield">
 
 <CHANGES>
+## Version 2026.04.18.07
+- Snapshot browser: removed the Add Tag / Remove Tag / Set Tags buttons
+  from the action bar. The underlying API endpoint and JS helper stay
+  (can be re-enabled later), but the UI is now just Diff / Forget /
+  Forget + Prune / Rewrite.
+- Integrity Check: fixed false "Finished with errors" status — the
+  success line "no errors were found" was being matched by the error
+  regex. The check output is now stripped of that success phrase
+  before the error detection runs.
+- Repository Tools: removed the "Copy Entire Repo" section. A full
+  repo mirror is better expressed as a per-target option during the
+  actual backup run (coming in a later release); the one-shot "copy
+  all snapshots" button was confusing and is gone for now. The
+  `snapshot_copy` API endpoint itself is retained for a future
+  reintroduction.
+
 ## Version 2026.04.18.06
 - Bundled restic upgraded from 0.17.3 to 0.18.1 (upstream stable).
   Download URL and SHA256SUMS are both driven by the same `resticVer`

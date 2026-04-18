@@ -1483,9 +1483,9 @@ function rbRepoJobChange() {
     var targetRow = document.getElementById('repo-target-row');
     rbRepoCtx.jobId = jobId;
     targetSel.innerHTML = '';
-    if (!jobId) { targetRow.style.display = 'none'; rbRepoCopyPopulateDstJobs(); return; }
+    if (!jobId) { targetRow.style.display = 'none'; return; }
     var panel = document.querySelector('.rb-job-panel[data-job-id="' + jobId + '"]');
-    if (!panel) { targetRow.style.display = 'none'; rbRepoCopyPopulateDstJobs(); return; }
+    if (!panel) { targetRow.style.display = 'none'; return; }
     var targets = panel.querySelectorAll('.job-targets .rb-card');
     targets.forEach(function(card) {
         var opt = document.createElement('option');
@@ -1501,73 +1501,6 @@ function rbRepoJobChange() {
     targetRow.style.display = targets.length > 1 ? '' : 'none';
     targetSel.onchange = function() { rbRepoCtx.targetId = this.value; };
     rbRepoCtx.targetId = targetSel.value;
-    rbRepoCopyPopulateDstJobs();
-}
-
-// Populate Copy-Whole-Repo destination job + target selects with every job/target
-// currently configured, minus the source target itself.
-function rbRepoCopyPopulateDstJobs() {
-    var dstJob = document.getElementById('repo-copy-dst-job');
-    if (!dstJob) return;
-    var prev = dstJob.value;
-    dstJob.innerHTML = '';
-    document.querySelectorAll('.rb-job-panel').forEach(function(panel) {
-        var id   = panel.getAttribute('data-job-id');
-        var nin  = panel.querySelector('.job-name');
-        var name = (nin && nin.value.trim()) || ('Job ' + id);
-        var opt  = document.createElement('option');
-        opt.value = id;
-        opt.textContent = name;
-        dstJob.appendChild(opt);
-    });
-    if (prev) dstJob.value = prev;
-    rbRepoCopyDstJobChange();
-}
-
-function rbRepoCopyDstJobChange() {
-    var dstJob = document.getElementById('repo-copy-dst-job');
-    var dstTgt = document.getElementById('repo-copy-dst-target');
-    if (!dstJob || !dstTgt) return;
-    dstTgt.innerHTML = '';
-    var panel = document.querySelector('.rb-job-panel[data-job-id="' + dstJob.value + '"]');
-    if (!panel) return;
-    panel.querySelectorAll('.job-targets .rb-card').forEach(function(card) {
-        var id = card.getAttribute('data-id');
-        // Skip source target
-        if (dstJob.value === rbRepoCtx.jobId && id === rbRepoCtx.targetId) return;
-        var pfx  = card.querySelector('.rb-url-pfx');
-        var url  = card.querySelector('.target-url');
-        var name = card.querySelector('.target-name');
-        var opt = document.createElement('option');
-        opt.value = id;
-        opt.textContent = (name && name.value.trim()) ||
-                          ((pfx && pfx.style.display !== 'none' ? pfx.textContent : '') + (url ? url.value.trim() : '')) ||
-                          'Target';
-        dstTgt.appendChild(opt);
-    });
-}
-
-function rbRepoCopyAll() {
-    if (!rbRepoRequire()) return;
-    var dstJob = document.getElementById('repo-copy-dst-job').value;
-    var dstTgt = document.getElementById('repo-copy-dst-target').value;
-    if (!dstTgt) { rbRepoShow('repo-copy-msg', 'Please pick a destination target.', 'error'); return; }
-    if (dstJob === rbRepoCtx.jobId && dstTgt === rbRepoCtx.targetId) {
-        rbRepoShow('repo-copy-msg', 'Source and destination must differ.', 'error'); return;
-    }
-    if (!confirm('Copy ALL snapshots from the selected source to the destination repository?\n\nNote: for best dedup the destination should have been initialised with `restic init --copy-chunker-params`.')) return;
-    rbRepoShow('repo-copy-msg', 'Starting copy…', 'warn');
-    rbAjax('snapshot_copy', {
-        job_id:        rbRepoCtx.jobId,
-        src_target_id: rbRepoCtx.targetId,
-        dst_job_id:    dstJob,
-        dst_target_id: dstTgt,
-        snapshot_ids:  []   // empty = copy all
-    }, function(resp) {
-        var started = resp && (resp.status === 'started' || resp.status === 'success');
-        rbRepoShow('repo-copy-msg', (resp && resp.message) || 'Started', started ? 'ok' : 'error');
-        if (started && resp.logfile) rbRepoStartPoll('copy', resp.logfile);
-    });
 }
 
 function rbRepoShow(id, text, tone) {
@@ -1665,9 +1598,13 @@ function rbRepoStartPoll(tool, logfile) {
             outEl.textContent = text || '(waiting for output…)';
             if (atBottom) outEl.scrollTop = outEl.scrollHeight;
             if (resp.done) {
+                // "no errors were found" is a SUCCESS line — strip it before
+                // we search for error markers so it doesn't cause a false alarm.
+                var scan = text.replace(/no errors were found/ig, '');
+                var bad  = /(^|\b)(fatal|repository contains errors|error:|errors? were found)/i.test(scan);
                 rbRepoShow('repo-' + tool + '-msg',
-                           /fatal|error|errors were/i.test(text) ? 'Finished with errors.' : 'Finished.',
-                           /fatal|error|errors were/i.test(text) ? 'error' : 'ok');
+                           bad ? 'Finished with errors.' : 'Finished.',
+                           bad ? 'error' : 'ok');
                 rbRepoToolStop(tool);
             }
         });

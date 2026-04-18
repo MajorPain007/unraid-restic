@@ -679,9 +679,6 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                 <strong style="color:var(--text-muted);font-size:.88em;">Selected:</strong>
                 <span id="snap-selected-count" style="font-family:monospace;">0</span>
                 <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbSnapDiff()">&#9723; Diff (2 selected)</button>
-                <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbSnapTagPrompt('add')">&#127991; Add Tag</button>
-                <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbSnapTagPrompt('remove')">&#127991; Remove Tag</button>
-                <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbSnapTagPrompt('set')">&#127991; Set Tags</button>
                 <button class="rb-btn rb-btn-red rb-btn-sm" onclick="rbSnapForget(false)">&#128465; Forget</button>
                 <button class="rb-btn rb-btn-red rb-btn-sm" onclick="rbSnapForget(true)">&#128465; Forget + Prune</button>
                 <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbSnapRewritePrompt()">&#9998; Rewrite (Exclude Path)</button>
@@ -822,24 +819,6 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
             </div>
             <div id="repo-recover-msg" style="display:none;margin-top:6px;font-size:.88em;padding:6px 10px;border-radius:4px;background:var(--bg-secondary);"></div>
             <pre id="repo-recover-out" style="display:none;margin-top:6px;max-height:320px;overflow:auto;padding:8px 10px;border-radius:4px;background:var(--bg-secondary);font-family:monospace;font-size:.85em;white-space:pre-wrap;"></pre>
-        </div>
-
-        <!-- COPY WHOLE REPO -->
-        <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
-            <strong style="color:var(--text-muted);font-size:.88em;display:block;margin-bottom:8px;">COPY ENTIRE REPO</strong>
-            <div class="rb-hint">Copy <em>all</em> snapshots from the selected source repository above to another target. Uses <code>restic copy</code> with <code>--repo2</code>; dedup works best if the destination was initialised with <code>--copy-chunker-params</code>.</div>
-            <div class="rb-row" style="margin-top:6px;">
-                <label>Destination Job:</label>
-                <select id="repo-copy-dst-job" onchange="rbRepoCopyDstJobChange()" style="max-width:260px;"></select>
-            </div>
-            <div class="rb-row">
-                <label>Destination Target:</label>
-                <select id="repo-copy-dst-target" style="max-width:360px;"></select>
-                <button class="rb-btn rb-btn-accent" onclick="rbRepoCopyAll()">&#128203; Start Copy</button>
-                <button class="rb-btn" onclick="rbRepoToolStop('copy')" id="repo-copy-stop" style="display:none;">&#9632; Stop polling</button>
-            </div>
-            <div id="repo-copy-msg" style="display:none;margin-top:6px;font-size:.88em;padding:6px 10px;border-radius:4px;background:var(--bg-secondary);"></div>
-            <pre id="repo-copy-out" style="display:none;margin-top:6px;max-height:320px;overflow:auto;padding:8px 10px;border-radius:4px;background:var(--bg-secondary);font-family:monospace;font-size:.85em;white-space:pre-wrap;"></pre>
         </div>
 
         <!-- RESTIC SELF-UPDATE -->
