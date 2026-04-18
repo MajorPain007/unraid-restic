@@ -27,6 +27,7 @@ import argparse
 # ==============================================================================
 
 CONFIG_FILE = "/boot/config/plugins/restic-backup/restic-backup.json"
+HOOKS_DIR   = "/boot/config/plugins/restic-backup/hooks"
 STAGE_ROOT  = "/tmp/restic-stage"           # where ZFS snapshots are bound to
 LOCK_FILE   = "/tmp/restic-backup.lock"
 PID_FILE    = "/tmp/restic-backup.pid"
@@ -37,18 +38,43 @@ LOG_DIR     = "/tmp"
 # ==============================================================================
 
 class Logger:
+    """
+    Dual-writer logger.
+    * Every line goes into the combined main log (restic-backup-YYYYMMDD.log).
+    * When a job is active (set_job()), the same line is also appended to a
+      per-job log file (restic-backup-<job_id>-YYYYMMDD.log) so the UI can
+      show only one job's output.
+    """
     def __init__(self):
-        self.logfile = os.path.join(LOG_DIR, f"restic-backup-{datetime.datetime.now():%Y%m%d}.log")
+        self.main_log = os.path.join(LOG_DIR, f"restic-backup-{datetime.datetime.now():%Y%m%d}.log")
+        self.job_log = None
         self.notifications_enabled = True
+
+    # kept for backwards compatibility with any external callers
+    @property
+    def logfile(self):
+        return self.main_log
+
+    def set_job(self, job_id):
+        if job_id:
+            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(job_id))
+            self.job_log = os.path.join(
+                LOG_DIR, f"restic-backup-{safe}-{datetime.datetime.now():%Y%m%d}.log"
+            )
+        else:
+            self.job_log = None
 
     def log(self, level, msg):
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         formatted = f"[{timestamp}] [{level}] {msg}"
-        try:
-            with open(self.logfile, "a") as f:
-                f.write(formatted + "\n")
-        except Exception:
-            pass
+        for path in (self.main_log, self.job_log):
+            if not path:
+                continue
+            try:
+                with open(path, "a") as f:
+                    f.write(formatted + "\n")
+            except Exception:
+                pass
 
     def info(self, msg):  self.log("INFO", msg)
     def warn(self, msg):  self.log("WARN", msg)
@@ -402,11 +428,165 @@ def cleanup_global():
     release_lock()
 
 # ==============================================================================
+# PRE / POST BACKUP HOOKS
+#
+# Hook commands are persisted as .sh files under
+#   /boot/config/plugins/restic-backup/hooks/<jobid>/{pre,post}-<idx>-<slug>.sh
+# by the PHP save layer. We pick them up by (job_id, phase, hook_id) — the
+# JSON config is the source of truth for order and metadata.
+# ==============================================================================
+
+def _slug(name):
+    s = (name or "").lower()
+    out = []
+    for ch in s:
+        if ch.isalnum():
+            out.append(ch)
+        elif out and out[-1] != "-":
+            out.append("-")
+    return "".join(out).strip("-")
+
+def _find_hook_script(job_id, phase, idx, name):
+    """
+    Return the path to the materialized hook .sh file, or None if missing.
+    Index is 1-based in the filename. Falls back to a fuzzy match if the
+    slug drifted (e.g. user renamed the hook but save hasn't run yet).
+    """
+    if not job_id:
+        return None
+    job_dir = os.path.join(HOOKS_DIR, job_id)
+    if not os.path.isdir(job_dir):
+        return None
+    exact = os.path.join(job_dir, f"{phase}-{idx:02d}-{_slug(name) or 'hook'}.sh")
+    if os.path.isfile(exact):
+        return exact
+    # Fallback: any file starting with "<phase>-<idx>-"
+    prefix = f"{phase}-{idx:02d}-"
+    for f in sorted(os.listdir(job_dir)):
+        if f.startswith(prefix) and f.endswith(".sh"):
+            return os.path.join(job_dir, f)
+    return None
+
+def run_hooks(job, phase, status_ctx=None):
+    """
+    Execute the pre_backup or post_backup hook list for a job.
+
+    phase: "pre_backup" or "post_backup"
+    status_ctx: dict with success/fail counts for post-hooks (optional)
+
+    Returns:
+      (ran, failed_abort)  — ran = hooks actually executed (not skipped),
+                             failed_abort = True if any hook with on_error=abort
+                             ended non-zero and we should abort the job.
+    """
+    hooks = (job.get("hooks") or {}).get(phase) or []
+    if not hooks:
+        return 0, False
+
+    phase_short = "pre" if phase == "pre_backup" else "post"
+    job_id   = job.get("id", "")
+    job_name = job.get("name", "Unnamed")
+    ran = 0
+    abort = False
+
+    logger.info(f"--- Running {len(hooks)} {phase_short}-hook(s) ---")
+
+    for idx, hook in enumerate(hooks, start=1):
+        if not hook.get("enabled", True):
+            logger.info(f"  [{idx}] '{hook.get('name','')}' disabled — skip")
+            continue
+
+        name     = hook.get("name", "") or f"hook-{idx}"
+        timeout  = int(hook.get("timeout", 3600) or 3600)
+        on_error = hook.get("on_error", "continue")
+        script   = _find_hook_script(job_id, phase_short, idx, name)
+
+        # Fallback: if the .sh wasn't materialized (e.g. first run after a
+        # raw JSON edit), write a throwaway to /tmp so the hook still runs.
+        cleanup_tmp = None
+        if not script:
+            command = hook.get("command", "") or ""
+            tmp_path = f"/tmp/restic-hook-{job_id}-{phase_short}-{idx}.sh"
+            try:
+                with open(tmp_path, "w") as f:
+                    f.write("#!/bin/bash\n" + command + "\n")
+                os.chmod(tmp_path, 0o755)
+                script = tmp_path
+                cleanup_tmp = tmp_path
+            except Exception as e:
+                logger.error(f"  [{idx}] '{name}' cannot create temp script: {e}")
+                if on_error == "abort":
+                    abort = True
+                    break
+                continue
+
+        # Environment passed to the hook.
+        env = os.environ.copy()
+        env["RESTIC_JOB_ID"]    = job_id
+        env["RESTIC_JOB_NAME"]  = job_name
+        env["RESTIC_PHASE"]     = phase_short
+        env["RESTIC_HOSTNAME"]  = (status_ctx or {}).get("hostname", "") or env.get("RESTIC_HOSTNAME", "")
+        if phase == "post_backup" and status_ctx is not None:
+            env["RESTIC_STATUS"]      = status_ctx.get("status", "")
+            env["RESTIC_OK_COUNT"]    = str(status_ctx.get("ok", 0))
+            env["RESTIC_FAIL_COUNT"]  = str(status_ctx.get("fail", 0))
+
+        logger.info(f"  [{idx}] '{name}' starting (timeout {timeout}s)")
+        t_hook = time.time()
+        try:
+            proc = subprocess.run(
+                ["/bin/bash", script],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=timeout,
+            )
+            dt = time.time() - t_hook
+            # Pipe hook output into the log, one line at a time.
+            for line in (proc.stdout or "").splitlines():
+                logger.info(f"      {line}")
+            if proc.returncode == 0:
+                logger.info(f"  [{idx}] '{name}' OK ({fmt(dt)})")
+                ran += 1
+            else:
+                logger.error(f"  [{idx}] '{name}' FAILED exit={proc.returncode} ({fmt(dt)})")
+                if on_error == "abort":
+                    abort = True
+                    if cleanup_tmp:
+                        try: os.unlink(cleanup_tmp)
+                        except Exception: pass
+                    break
+        except subprocess.TimeoutExpired:
+            logger.error(f"  [{idx}] '{name}' TIMEOUT after {timeout}s")
+            if on_error == "abort":
+                abort = True
+                if cleanup_tmp:
+                    try: os.unlink(cleanup_tmp)
+                    except Exception: pass
+                break
+        except Exception as e:
+            logger.error(f"  [{idx}] '{name}' EXCEPTION: {e}")
+            if on_error == "abort":
+                abort = True
+                if cleanup_tmp:
+                    try: os.unlink(cleanup_tmp)
+                    except Exception: pass
+                break
+
+        if cleanup_tmp:
+            try: os.unlink(cleanup_tmp)
+            except Exception: pass
+
+    return ran, abort
+
+# ==============================================================================
 # RUN JOB
 # ==============================================================================
 
 def run_job(config, job):
     job_name = job.get("name", "Unnamed")
+    logger.set_job(job.get("id"))
     logger.info(f"=== Job: {job_name} ===")
     t_job = time.time()
 
@@ -420,6 +600,23 @@ def run_job(config, job):
     hostname    = general.get("hostname", "")
     tags        = job.get("tags", "")
 
+    # -------------------------------------------------------------------------
+    # PRE-BACKUP HOOKS — run as the very first thing in the job, before any
+    # ZFS snapshot, before path collection, before restic. If a hook with
+    # on_error=abort fails, we skip the backup entirely (but still run
+    # post-hooks with status=failed).
+    # -------------------------------------------------------------------------
+    pre_status_ctx = {"hostname": hostname}
+    _pre_ran, pre_abort = run_hooks(job, "pre_backup", pre_status_ctx)
+    if pre_abort:
+        logger.error(f"Pre-hook aborted job '{job_name}'. Skipping backup.")
+        # Run post-hooks with failure status so notifiers still fire.
+        run_hooks(job, "post_backup",
+                  {"hostname": hostname, "status": "failed", "ok": 0, "fail": 0})
+        logger.info(f"=== Job {job_name} aborted by pre-hook ({fmt(time.time() - t_job)}) ===")
+        logger.set_job(None)
+        return 0, 0
+
     direct_paths = collect_direct_paths(job)
     snapshots, stages = prepare_zfs_stages(job.get("zfs", {}))
 
@@ -431,6 +628,9 @@ def run_job(config, job):
         # Still need to clean up any ZFS snapshots that might have been taken
         if snapshots:
             destroy_zfs_snapshots(snapshots)
+        run_hooks(job, "post_backup",
+                  {"hostname": hostname, "status": "failed", "ok": 0, "fail": 0})
+        logger.set_job(None)
         return 0, 0
 
     success = 0
@@ -554,7 +754,28 @@ def run_job(config, job):
         if snapshots:
             destroy_zfs_snapshots(snapshots)
 
+        # ---------------------------------------------------------------------
+        # POST-BACKUP HOOKS — run after all targets are processed, regardless
+        # of success/failure. RESTIC_STATUS reflects the outcome:
+        #   success  — every enabled target succeeded
+        #   partial  — some succeeded, some failed
+        #   failed   — every target failed (or no target ran)
+        # ---------------------------------------------------------------------
+        if success > 0 and fail == 0:
+            _status = "success"
+        elif success > 0 and fail > 0:
+            _status = "partial"
+        else:
+            _status = "failed"
+        run_hooks(job, "post_backup", {
+            "hostname": hostname,
+            "status":   _status,
+            "ok":       success,
+            "fail":     fail,
+        })
+
     logger.info(f"=== Job {job_name} done ({fmt(time.time() - t_job)}) ===")
+    logger.set_job(None)
     return success, fail
 
 # ==============================================================================

@@ -421,10 +421,6 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                                     <input type="text" class="source-path" value="<?= htmlspecialchars($s['path'] ?? '') ?>" placeholder="/mnt/user/appdata" data-picktree="dir">
                                 </div>
                                 <div class="rb-row">
-                                    <label>Label:</label>
-                                    <input type="text" class="source-label" value="<?= htmlspecialchars($s['label'] ?? '') ?>" placeholder="appdata (folder name in backup)">
-                                </div>
-                                <div class="rb-row">
                                     <label>Enabled:</label>
                                     <select class="source-enabled"><option value="1" <?= ($s['enabled'] ?? true) ? 'selected' : '' ?>>Yes</option><option value="0" <?= !($s['enabled'] ?? true) ? 'selected' : '' ?>>No</option></select>
                                 </div>
@@ -461,6 +457,61 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                             <div class="rb-row"><label>Keep Weekly:</label><input type="number" class="ret-weekly" value="<?= (int)($j['retention']['keep_weekly'] ?? 4) ?>" min="0"></div>
                             <div class="rb-row"><label>Keep Monthly:</label><input type="number" class="ret-monthly" value="<?= (int)($j['retention']['keep_monthly'] ?? 0) ?>" min="0"></div>
                             <div class="rb-row"><label>Keep Yearly:</label><input type="number" class="ret-yearly" value="<?= (int)($j['retention']['keep_yearly'] ?? 0) ?>" min="0"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PRE/POST HOOKS -->
+                <div class="rb-section">
+                    <div class="rb-section-hdr closed" onclick="rbToggle(this)"><span>Pre/Post Backup Hooks</span><span class="arr">&#9660;</span></div>
+                    <div class="rb-section-body hidden">
+                        <p style="color:var(--text-muted);margin:0 0 10px;">
+                            Shell commands run around the backup. <strong>Pre-hooks</strong> run as the very first thing in the job (before ZFS snapshots, before restic starts). <strong>Post-hooks</strong> run after all targets are processed — even if the backup failed. Scripts are materialized on save under <code>/boot/config/plugins/restic-backup/hooks/&lt;jobid&gt;/</code> and can be inspected or edited there.
+                        </p>
+                        <p style="color:var(--text-muted);margin:0 0 10px;font-size:.85em;">
+                            Available env vars: <code>RESTIC_JOB_ID</code>, <code>RESTIC_JOB_NAME</code>, <code>RESTIC_PHASE</code>, <code>RESTIC_HOSTNAME</code>. Post-hooks additionally get <code>RESTIC_STATUS</code> (<code>success</code>/<code>partial</code>/<code>failed</code>), <code>RESTIC_OK_COUNT</code>, <code>RESTIC_FAIL_COUNT</code>.
+                        </p>
+
+                        <!-- Pre-Backup Hooks -->
+                        <div style="margin-bottom:14px;">
+                            <strong style="display:block;margin:6px 0;color:var(--text-muted);font-size:.88em;">PRE-BACKUP HOOKS (run first)</strong>
+                            <div class="job-hooks-pre">
+                                <?php foreach (($j['hooks']['pre_backup'] ?? []) as $hi => $h): ?>
+                                <div class="rb-card hook-card" data-id="<?= htmlspecialchars($h['id'] ?? '') ?>" data-phase="pre">
+                                    <div class="rb-card-hdr">
+                                        <span class="rb-card-title">Pre-Hook #<?= $hi+1 ?></span>
+                                        <button class="rb-btn rb-btn-red rb-btn-sm" onclick="this.closest('.rb-card').remove()">Remove</button>
+                                    </div>
+                                    <div class="rb-row"><label>Name:</label><input type="text" class="hook-name" value="<?= htmlspecialchars($h['name'] ?? '') ?>" placeholder="e.g. MariaDB dump"></div>
+                                    <div class="rb-row" style="align-items:flex-start;"><label>Command:</label><textarea class="hook-command" rows="5" spellcheck="false" style="flex:1;font-family:monospace;font-size:.88em;" placeholder="docker exec mariadb sh -c 'mariadb-dump …' | gzip > /mnt/user/appdata/_db_dumps/mariadb.sql.gz"><?= htmlspecialchars($h['command'] ?? '') ?></textarea></div>
+                                    <div class="rb-row"><label>Enabled:</label><select class="hook-enabled"><option value="1" <?= ($h['enabled'] ?? true) ? 'selected' : '' ?>>Yes</option><option value="0" <?= !($h['enabled'] ?? true) ? 'selected' : '' ?>>No</option></select></div>
+                                    <div class="rb-row"><label>Timeout (s):</label><input type="number" class="hook-timeout" value="<?= (int)($h['timeout'] ?? 3600) ?>" min="5" max="86400" style="max-width:100px;"></div>
+                                    <div class="rb-row"><label>On Error:</label><select class="hook-onerror"><option value="abort" <?= ($h['on_error'] ?? 'continue') === 'abort' ? 'selected' : '' ?>>Abort job</option><option value="continue" <?= ($h['on_error'] ?? 'continue') === 'continue' ? 'selected' : '' ?>>Continue</option></select></div>
+                                </div>
+                                <?php endforeach; ?>
+                            </div>
+                            <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbAddHook(this,'pre')">+ Add Pre-Hook</button>
+                        </div>
+
+                        <!-- Post-Backup Hooks -->
+                        <div>
+                            <strong style="display:block;margin:6px 0;color:var(--text-muted);font-size:.88em;">POST-BACKUP HOOKS (run last, always)</strong>
+                            <div class="job-hooks-post">
+                                <?php foreach (($j['hooks']['post_backup'] ?? []) as $hi => $h): ?>
+                                <div class="rb-card hook-card" data-id="<?= htmlspecialchars($h['id'] ?? '') ?>" data-phase="post">
+                                    <div class="rb-card-hdr">
+                                        <span class="rb-card-title">Post-Hook #<?= $hi+1 ?></span>
+                                        <button class="rb-btn rb-btn-red rb-btn-sm" onclick="this.closest('.rb-card').remove()">Remove</button>
+                                    </div>
+                                    <div class="rb-row"><label>Name:</label><input type="text" class="hook-name" value="<?= htmlspecialchars($h['name'] ?? '') ?>" placeholder="e.g. ntfy notification"></div>
+                                    <div class="rb-row" style="align-items:flex-start;"><label>Command:</label><textarea class="hook-command" rows="5" spellcheck="false" style="flex:1;font-family:monospace;font-size:.88em;" placeholder="curl -fsS -d &quot;$RESTIC_JOB_NAME: $RESTIC_STATUS&quot; https://ntfy.sh/mytopic"><?= htmlspecialchars($h['command'] ?? '') ?></textarea></div>
+                                    <div class="rb-row"><label>Enabled:</label><select class="hook-enabled"><option value="1" <?= ($h['enabled'] ?? true) ? 'selected' : '' ?>>Yes</option><option value="0" <?= !($h['enabled'] ?? true) ? 'selected' : '' ?>>No</option></select></div>
+                                    <div class="rb-row"><label>Timeout (s):</label><input type="number" class="hook-timeout" value="<?= (int)($h['timeout'] ?? 600) ?>" min="5" max="86400" style="max-width:100px;"></div>
+                                    <div class="rb-row"><label>On Error:</label><select class="hook-onerror"><option value="continue" <?= ($h['on_error'] ?? 'continue') === 'continue' ? 'selected' : '' ?>>Continue (ignore)</option><option value="abort" <?= ($h['on_error'] ?? 'continue') === 'abort' ? 'selected' : '' ?>>Mark job failed</option></select></div>
+                                </div>
+                                <?php endforeach; ?>
+                            </div>
+                            <button class="rb-btn rb-btn-accent rb-btn-sm" onclick="rbAddHook(this,'post')">+ Add Post-Hook</button>
                         </div>
                     </div>
                 </div>
@@ -592,6 +643,34 @@ textarea.rb-excludes:focus { outline: none; border-color: var(--accent); }
                     <tbody id="snap-tbody"></tbody>
                 </table>
             </div>
+        </div>
+
+        <!-- Find files across snapshots -->
+        <div id="snap-find" style="display:none;margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
+            <strong style="color:var(--text-muted);font-size:.88em;display:block;margin-bottom:8px;">FIND FILES ACROSS SNAPSHOTS</strong>
+            <div class="rb-row" style="align-items:flex-start;">
+                <label>Pattern:</label>
+                <input type="text" id="snap-find-pattern" placeholder="e.g. *.docx  or  photos/2024/**/*.jpg" style="flex:1;max-width:420px;" autocomplete="off" onkeydown="if(event.key==='Enter'){rbSnapFind();}">
+                <button class="rb-btn rb-btn-accent" onclick="rbSnapFind()">&#128269; Search</button>
+            </div>
+            <div class="rb-row">
+                <label>Options:</label>
+                <label style="display:inline-flex;align-items:center;gap:4px;font-weight:normal;">
+                    <input type="checkbox" id="snap-find-ci" checked> Ignore case
+                </label>
+                <label style="display:inline-flex;align-items:center;gap:4px;font-weight:normal;margin-left:12px;">Newest only:
+                    <select id="snap-find-newest" style="width:auto;">
+                        <option value="">(all)</option>
+                        <option value="7d">7 days</option>
+                        <option value="30d">30 days</option>
+                        <option value="90d">90 days</option>
+                        <option value="1y">1 year</option>
+                    </select>
+                </label>
+            </div>
+            <div class="rb-hint">Glob-style patterns. Use <code>*</code> for any chars in one path segment, <code>**</code> for any depth, <code>?</code> for a single char.</div>
+            <div id="snap-find-msg" style="display:none;margin-top:6px;font-size:.88em;padding:6px 10px;border-radius:4px;background:var(--bg-secondary);"></div>
+            <div id="snap-find-results" style="margin-top:10px;max-height:380px;overflow-y:auto;"></div>
         </div>
 
         <!-- Snapshot browser -->

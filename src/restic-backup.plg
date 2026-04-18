@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "restic-backup">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.04.18.01">
-<!ENTITY md5       "1465a577248d2eefe582f1e7faffc83c">
+<!ENTITY version   "2026.04.18.03">
+<!ENTITY md5       "ab476396dffbb0bdb4ce0bde5e129ee4">
 <!ENTITY launch    "Settings/ResticBackup">
 <!ENTITY github    "MajorPain007/unraid-restic">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/src/&name;.plg">
@@ -21,6 +21,45 @@
         icon="shield">
 
 <CHANGES>
+## Version 2026.04.18.03
+- Pre/Post-Backup Hooks: new job section for shell commands that run around
+  the backup.
+  * Pre-hooks run as the very first thing in the job, before ZFS snapshots,
+    before path collection, before restic. If a pre-hook with `on_error=abort`
+    fails, the backup is skipped entirely.
+  * Post-hooks run after all targets are processed, regardless of success or
+    failure, and receive `RESTIC_STATUS` (success/partial/failed) plus
+    `RESTIC_OK_COUNT` / `RESTIC_FAIL_COUNT` as environment variables.
+  * Every hook also gets `RESTIC_JOB_ID`, `RESTIC_JOB_NAME`, `RESTIC_PHASE`,
+    `RESTIC_HOSTNAME`.
+  * Configurable per hook: name, command (multi-line), enabled toggle,
+    timeout (5 s – 24 h), on-error behaviour.
+  * Hook commands are materialised as real `.sh` files under
+    `/boot/config/plugins/restic-backup/hooks/[jobid]/{pre,post}-[idx]-[slug].sh`
+    on save — inspectable via SSH and survives reboot. Stale files are
+    pruned automatically when hooks are removed or renamed.
+  * Hook stdout/stderr is streamed into the per-job log, so you can verify
+    that a DB dump actually ran.
+
+## Version 2026.04.18.02
+- Per-job log filtering: each job now writes its own log file
+  (`restic-backup-[jobId]-YYYYMMDD.log`) in addition to the combined main
+  log, and the log viewer's job selector filters the shown output — pick
+  Job A to see only Job A, pick "All Jobs" for the combined stream.
+- Cron serialization via `flock`: jobs scheduled at the same minute no
+  longer collide on the PID lock. Each cron entry is wrapped in
+  `flock -w 21600 /tmp/restic-backup.queue`, so if Job A is still running
+  when Job B's cron fires, Job B waits (up to 6h) and runs afterwards.
+- Source Label field removed: the per-source label became obsolete with
+  original-path backups (restic now records the real mountpoint) and has
+  been dropped from the Source Directories editor and the saved config.
+- Find files across snapshots: new search panel below the snapshot list
+  runs `restic find` against the repo, groups hits by snapshot, and each
+  hit has an "Open" button that jumps to the snapshot browser at the
+  containing directory so the file can be restored in one click.
+  Supports glob patterns, case-insensitive matching, and newest-N
+  filtering (7d/30d/90d/1y).
+
 ## Version 2026.04.18.01
 - Original source paths: restic now records real mountpoints (e.g.
   `/mnt/cache/appdata`) instead of staging paths like `/tmp/.../appdata`.
@@ -78,6 +117,7 @@
 <FILE Run="/bin/bash">
 <INLINE>
 mkdir -p &configDir;
+mkdir -p &configDir;/hooks
 mkdir -p &tmpDir;
 </INLINE>
 </FILE>

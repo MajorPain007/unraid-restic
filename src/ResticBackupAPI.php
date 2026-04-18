@@ -287,9 +287,12 @@ switch ($action) {
     // LOG
     // =========================================================================
     case 'log':
+        // Optional job_id filters to the per-job log file; empty = combined main log.
+        $log_job_id = isset($data['job_id']) ? (string)$data['job_id'] : '';
         echo json_encode([
             'status' => 'success',
-            'log'    => restic_read_log(200),
+            'job_id' => $log_job_id,
+            'log'    => restic_read_log(200, $log_job_id),
         ]);
         break;
 
@@ -399,6 +402,74 @@ switch ($action) {
             echo json_encode(['status' => 'error', 'message' => $text ?: 'snapshots failed (exit ' . $ret . ')']);
         }
         break;
+
+    // =========================================================================
+    // JOB FIND — full-text search for paths across all snapshots in a repo.
+    //
+    // Parameters:
+    //   job_id    : id of the saved job
+    //   target_id : id of the target (optional, defaults to first enabled)
+    //   pattern   : the search pattern (glob-style, restic syntax)
+    //   ignore_case : "1" to pass -i
+    //   snapshot  : optional single snapshot id to restrict search to
+    //   newest    : optional e.g. "30d" to pass -N
+    // =========================================================================
+    case 'job_find': {
+        $job_id      = $data['job_id']    ?? '';
+        $target_id   = $data['target_id'] ?? '';
+        $pattern     = trim((string)($data['pattern'] ?? ''));
+        $ignore_case = !empty($data['ignore_case']);
+        $snap_id     = trim((string)($data['snapshot'] ?? ''));
+        $newest      = trim((string)($data['newest'] ?? ''));
+
+        if (!$job_id) {
+            echo json_encode(['status' => 'error', 'message' => 'No job_id']);
+            break;
+        }
+        if ($pattern === '') {
+            echo json_encode(['status' => 'error', 'message' => 'Please enter a search pattern']);
+            break;
+        }
+
+        $tc = restic_get_target_config($job_id, $target_id);
+        if (!$tc) {
+            echo json_encode(['status' => 'error', 'message' => 'Job or target not found']);
+            break;
+        }
+
+        $env_str = restic_build_env_str($tc['env']);
+        $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
+        $flags   = ['--json'];
+        if ($ignore_case)          { $flags[] = '-i'; }
+        if ($snap_id !== '')       { $flags[] = '--snapshot ' . escapeshellarg($snap_id); }
+        if ($newest !== '')        { $flags[] = '-N ' . escapeshellarg($newest); }
+
+        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+             . ($sfx ? " $sfx" : '')
+             . ' find ' . implode(' ', $flags)
+             . ' ' . escapeshellarg($pattern)
+             . ' 2>&1';
+
+        $output = [];
+        exec($cmd, $output, $ret);
+        $text = implode("\n", $output);
+
+        // restic find --json prints a JSON array with objects
+        // { "matches": [...], "hits": N, "snapshot": "id" }
+        $parsed = json_decode($text, true);
+        if ($ret === 0 && is_array($parsed)) {
+            // Flatten: one result entry per snapshot, keep original shape.
+            echo json_encode([
+                'status'  => 'success',
+                'pattern' => $pattern,
+                'results' => $parsed,
+            ]);
+        } else {
+            $msg = trim($text) ?: 'restic find failed (exit ' . $ret . ')';
+            echo json_encode(['status' => 'error', 'message' => $msg]);
+        }
+        break;
+    }
 
     // =========================================================================
     // SNAPSHOT PREFETCH  (return compact full flat listing for JS-side filtering)

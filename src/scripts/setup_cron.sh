@@ -1,8 +1,11 @@
 #!/bin/bash
-# setup_cron.sh - Restore restic backup cron jobs from saved config on boot
+# setup_cron.sh - Restore restic backup cron jobs from saved config on boot.
+# Lines are wrapped in flock so jobs scheduled at the same minute run one
+# after another instead of colliding on the restic-backup PID lock.
 CONFIG="/boot/config/plugins/restic-backup/restic-backup.json"
 CRON_FILE="/etc/cron.d/restic-backup"
 SCRIPT="/usr/local/emhttp/plugins/restic-backup/scripts/restic-backup.py"
+QUEUE_LOCK="/tmp/restic-backup.queue"
 
 rm -f "$CRON_FILE"
 
@@ -12,7 +15,7 @@ if [ ! -f "$CONFIG" ]; then
 fi
 
 python3 << PYEOF
-import json, sys
+import json, shlex, sys
 
 try:
     c = json.load(open("$CONFIG"))
@@ -24,8 +27,10 @@ lines = []
 for job in c.get("jobs", []):
     s = job.get("schedule", {})
     if job.get("enabled", True) and s.get("enabled") and s.get("cron"):
-        lines.append("{} root /usr/bin/python3 $SCRIPT --backup --job {}".format(
-            s["cron"], job["id"]))
+        job_id = shlex.quote(str(job["id"]))
+        cmd = "/usr/bin/python3 $SCRIPT --backup --job {}".format(job_id)
+        lines.append("{} root /usr/bin/flock -w 21600 $QUEUE_LOCK {}".format(
+            s["cron"], cmd))
 
 if lines:
     with open("$CRON_FILE", "w") as f:

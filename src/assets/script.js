@@ -252,11 +252,44 @@ function rbAddSource(btn) {
         + '<div class="rb-card-hdr"><span class="rb-card-title">Source #' + n + '</span>'
         + '<button class="rb-btn rb-btn-red rb-btn-sm" onclick="this.closest(\'.rb-card\').remove()">Remove</button></div>'
         + '<div class="rb-row"><label>Path:</label><input type="text" class="source-path" value="" placeholder="/mnt/user/appdata" data-picktree="dir"></div>'
-        + '<div class="rb-row"><label>Label:</label><input type="text" class="source-label" value="" placeholder="appdata"></div>'
         + '<div class="rb-row"><label>Enabled:</label><select class="source-enabled"><option value="1" selected>Yes</option><option value="0">No</option></select></div>'
         + '</div>';
     list.insertAdjacentHTML('beforeend', html);
     rbInitPickTree();
+}
+
+// Add a pre- or post-backup hook card to the current job editor.
+// phase must be 'pre' or 'post'. The card layout mirrors the PHP-rendered
+// variant in ResticBackup.php so rbCollect() can read both identically.
+function rbAddHook(btn, phase) {
+    var listClass = phase === 'pre' ? '.job-hooks-pre' : '.job-hooks-post';
+    var list = btn.closest('.rb-section-body').querySelector(listClass);
+    var n = list.querySelectorAll('.hook-card').length + 1;
+    var id = rbGenId();
+    var titlePrefix = phase === 'pre' ? 'Pre-Hook #' : 'Post-Hook #';
+    var defaultTimeout = phase === 'pre' ? 3600 : 600;
+    // Post-hooks default to "continue" so a failing webhook doesn't poison
+    // the job. Pre-hooks default to "abort" because a failing DB dump means
+    // the backup would be inconsistent.
+    var preOnErr  = '<option value="abort" selected>Abort job</option><option value="continue">Continue</option>';
+    var postOnErr = '<option value="continue" selected>Continue (ignore)</option><option value="abort">Mark job failed</option>';
+    var namePlaceholder = phase === 'pre'
+        ? 'e.g. MariaDB dump'
+        : 'e.g. ntfy notification';
+    var cmdPlaceholder = phase === 'pre'
+        ? "docker exec mariadb sh -c 'mariadb-dump …' | gzip > /mnt/user/appdata/_db_dumps/mariadb.sql.gz"
+        : 'curl -fsS -d "$RESTIC_JOB_NAME: $RESTIC_STATUS" https://ntfy.sh/mytopic';
+    var html = '<div class="rb-card hook-card" data-id="' + id + '" data-phase="' + phase + '">'
+        + '<div class="rb-card-hdr"><span class="rb-card-title">' + titlePrefix + n + '</span>'
+        +   '<button class="rb-btn rb-btn-red rb-btn-sm" onclick="this.closest(\'.rb-card\').remove()">Remove</button></div>'
+        + '<div class="rb-row"><label>Name:</label><input type="text" class="hook-name" value="" placeholder="' + namePlaceholder + '"></div>'
+        + '<div class="rb-row" style="align-items:flex-start;"><label>Command:</label>'
+        +   '<textarea class="hook-command" rows="5" spellcheck="false" style="flex:1;font-family:monospace;font-size:.88em;" placeholder="' + cmdPlaceholder.replace(/"/g,'&quot;') + '"></textarea></div>'
+        + '<div class="rb-row"><label>Enabled:</label><select class="hook-enabled"><option value="1" selected>Yes</option><option value="0">No</option></select></div>'
+        + '<div class="rb-row"><label>Timeout (s):</label><input type="number" class="hook-timeout" value="' + defaultTimeout + '" min="5" max="86400" style="max-width:100px;"></div>'
+        + '<div class="rb-row"><label>On Error:</label><select class="hook-onerror">' + (phase === 'pre' ? preOnErr : postOnErr) + '</select></div>'
+        + '</div>';
+    list.insertAdjacentHTML('beforeend', html);
 }
 
 // =============================================================================
@@ -643,6 +676,7 @@ function rbCollect() {
             enabled: panel.querySelector('.job-enabled').value === '1',
             targets: [],
             sources: [],
+            hooks: { pre_backup: [], post_backup: [] },
             backup_boot: !!(panel.querySelector('.job-backup-boot') || {}).checked,
             zfs: {
                 enabled:   panel.querySelector('.zfs-enabled').value === '1',
@@ -697,7 +731,6 @@ function rbCollect() {
             job.sources.push({
                 id: card.getAttribute('data-id') || rbGenId(),
                 path: card.querySelector('.source-path').value.trim(),
-                label: card.querySelector('.source-label').value.trim(),
                 enabled: card.querySelector('.source-enabled').value === '1'
             });
         });
@@ -705,6 +738,21 @@ function rbCollect() {
         panel.querySelectorAll('.zfs-dataset').forEach(function(inp) {
             var v = inp.value.trim();
             if (v) job.zfs.datasets.push(v);
+        });
+
+        // Pre/post-backup hooks: same card layout, different list classes
+        [['.job-hooks-pre', 'pre_backup'], ['.job-hooks-post', 'post_backup']]
+        .forEach(function(pair) {
+            panel.querySelectorAll(pair[0] + ' .hook-card').forEach(function(card) {
+                job.hooks[pair[1]].push({
+                    id:       card.getAttribute('data-id') || rbGenId(),
+                    name:     (card.querySelector('.hook-name').value || '').trim(),
+                    command:  card.querySelector('.hook-command').value,
+                    enabled:  card.querySelector('.hook-enabled').value === '1',
+                    timeout:  parseInt(card.querySelector('.hook-timeout').value, 10) || 3600,
+                    on_error: card.querySelector('.hook-onerror').value
+                });
+            });
         });
 
         config.jobs.push(job);
@@ -859,9 +907,19 @@ function rbTestTarget(btn) {
 // LOG
 // =============================================================================
 function rbRefreshLog() {
-    rbAjax('log', {}, function(resp) {
+    // Filter the shown log by the currently selected job. "" (All Jobs) reads
+    // the combined main log; a specific job id reads that job's log file only.
+    var sel = document.getElementById('rb-job-select');
+    var jobId = sel ? sel.value : '';
+    rbAjax('log', { job_id: jobId }, function(resp) {
         var el = document.getElementById('rb-log');
-        el.textContent = (resp.log || '').trim() || 'No log data.';
+        var text = (resp.log || '').trim();
+        if (!text) {
+            text = jobId
+                ? 'No log entries yet for this job.'
+                : 'No log data.';
+        }
+        el.textContent = text;
         el.scrollTop = el.scrollHeight;
     });
 }
@@ -1045,6 +1103,9 @@ function rbLoadSnapshots() {
         }
         document.getElementById('snap-list').style.display = '';
         document.getElementById('snap-browser').style.display = 'none';
+        // Reveal the "Find files across snapshots" panel whenever we have a repo
+        var findBox = document.getElementById('snap-find');
+        if (findBox) findBox.style.display = '';
     }, function(err) {
         btn.disabled = false; btn.textContent = 'Load Snapshots';
         rbMsg('Failed: ' + err, 'error');
@@ -1208,4 +1269,105 @@ function rbFmtBytes(bytes) {
     var u = ['B','KB','MB','GB','TB'], i = 0;
     while (bytes >= 1024 && i < u.length - 1) { bytes /= 1024; i++; }
     return bytes.toFixed(i > 0 ? 1 : 0) + '\u00a0' + u[i];
+}
+
+// =============================================================================
+// FIND FILES ACROSS SNAPSHOTS (restic find)
+//
+// Runs a single `restic find --json` over the current job/target and renders
+// results grouped by snapshot. Clicking a hit opens that snapshot's browser
+// navigated to the containing directory so the file can be restored.
+// =============================================================================
+function rbSnapFind() {
+    if (!rbSnapCtx.jobId) { rbMsg('Please select a job first.', 'error'); return; }
+    rbSnapCtx.targetId = document.getElementById('snap-target-sel').value;
+
+    var pattern = document.getElementById('snap-find-pattern').value.trim();
+    var msg     = document.getElementById('snap-find-msg');
+    var out     = document.getElementById('snap-find-results');
+    if (!pattern) {
+        msg.textContent = 'Please enter a pattern.';
+        msg.style.color = 'var(--red)';
+        msg.style.display = 'block';
+        return;
+    }
+
+    msg.textContent = 'Searching all snapshots for "' + pattern + '"\u2026';
+    msg.style.color = '#e3b341';
+    msg.style.display = 'block';
+    out.innerHTML = '';
+
+    rbAjax('job_find', {
+        job_id:      rbSnapCtx.jobId,
+        target_id:   rbSnapCtx.targetId,
+        pattern:     pattern,
+        ignore_case: document.getElementById('snap-find-ci').checked ? '1' : '',
+        newest:      document.getElementById('snap-find-newest').value
+    }, function(resp) {
+        if (resp.status !== 'success') {
+            msg.textContent = 'Error: ' + (resp.message || 'unknown');
+            msg.style.color = 'var(--red)';
+            return;
+        }
+        var groups = resp.results || [];
+        var hitCount = 0;
+        groups.forEach(function(g) { hitCount += (g.matches || []).length; });
+
+        if (hitCount === 0) {
+            msg.textContent = 'No matches found in any snapshot.';
+            msg.style.color = 'var(--text-muted)';
+            return;
+        }
+
+        msg.textContent = hitCount + ' match(es) in ' + groups.length + ' snapshot(s).';
+        msg.style.color = 'var(--green)';
+
+        var html = '';
+        groups.forEach(function(g) {
+            var snapId  = g.snapshot || '';
+            var shortId = snapId.substring(0, 8);
+            var matches = g.matches || [];
+            html += '<div style="margin-bottom:10px;border:1px solid var(--border);border-radius:4px;overflow:hidden;">'
+                +    '<div style="padding:6px 10px;background:var(--bg-secondary);font-size:.85em;">'
+                +      '<strong style="font-family:monospace;color:var(--accent);">' + escHtml(shortId) + '</strong>'
+                +      '&nbsp;&middot;&nbsp;' + matches.length + ' match' + (matches.length !== 1 ? 'es' : '')
+                +    '</div>'
+                +    '<div style="max-height:240px;overflow-y:auto;">';
+            matches.forEach(function(m) {
+                var path = m.path || '';
+                var size = typeof m.size === 'number' ? rbFmtBytes(m.size) : '';
+                var type = m.type || 'file';
+                var dir  = path.replace(/\/[^\/]*$/, '') || '/';
+                html += '<div class="rb-find-hit" style="display:flex;align-items:center;gap:8px;padding:4px 10px;border-top:1px solid var(--border-inner);font-size:.85em;">'
+                    +     '<span style="flex:1;word-break:break-all;font-family:monospace;">' + escHtml(path) + '</span>'
+                    +     (size ? '<span style="color:var(--text-muted);">' + size + '</span>' : '')
+                    +     '<button class="rb-btn rb-btn-gray rb-btn-sm" onclick="rbSnapFindOpen('
+                    +       escAttr(JSON.stringify(snapId)) + ','
+                    +       escAttr(JSON.stringify(shortId)) + ','
+                    +       escAttr(JSON.stringify(type === 'dir' ? path : dir))
+                    +     ')">Open</button>'
+                    +   '</div>';
+            });
+            html +=   '</div>'
+                + '</div>';
+        });
+        out.innerHTML = html;
+    }, function(err) {
+        msg.textContent = 'Error: ' + err;
+        msg.style.color = 'var(--red)';
+    });
+}
+
+function rbSnapFindOpen(snapshotId, shortId, targetPath) {
+    // Jump to the snapshot browser at the directory containing the hit.
+    rbOpenSnapBrowser(snapshotId, shortId, []);
+    // rbOpenSnapBrowser navigates to '/' asynchronously; give it a tick,
+    // then navigate to the target directory.
+    setTimeout(function() {
+        if (typeof rbSnapBrowse === 'function') {
+            rbSnapBrowse(targetPath || '/');
+        }
+        var el = document.getElementById('snap-browser');
+        if (el && el.scrollIntoView) el.scrollIntoView({behavior:'smooth', block:'start'});
+    }, 80);
 }

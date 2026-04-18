@@ -6,6 +6,7 @@
 define('RESTIC_PLUGIN_NAME', 'restic-backup');
 define('RESTIC_CONFIG_DIR', '/boot/config/plugins/' . RESTIC_PLUGIN_NAME);
 define('RESTIC_CONFIG_FILE', RESTIC_CONFIG_DIR . '/restic-backup.json');
+define('RESTIC_HOOKS_DIR',  RESTIC_CONFIG_DIR . '/hooks');
 define('RESTIC_PLUGIN_DIR', '/usr/local/emhttp/plugins/' . RESTIC_PLUGIN_NAME);
 define('RESTIC_SCRIPT', RESTIC_PLUGIN_DIR . '/scripts/restic-backup.py');
 define('RESTIC_LOG_DIR', '/tmp');
@@ -66,6 +67,28 @@ function restic_default_job(): array {
         'max_retries' => 3,
         'retry_wait'  => 30,
         'tags'        => '',
+        'hooks' => [
+            // Pre-backup hooks run as the very first thing in the job
+            // (before ZFS snapshots, before collecting paths, before restic).
+            'pre_backup'  => [],
+            // Post-backup hooks run after all targets are processed,
+            // regardless of success/failure. They receive RESTIC_STATUS.
+            'post_backup' => [],
+        ],
+    ];
+}
+
+/**
+ * Returns a default hook entry structure.
+ */
+function restic_default_hook(): array {
+    return [
+        'id'       => restic_generate_id(),
+        'name'     => '',
+        'command'  => '',
+        'enabled'  => true,
+        'timeout'  => 3600,
+        'on_error' => 'continue',   // "abort" | "continue" (pre only respects abort)
     ];
 }
 
@@ -94,11 +117,22 @@ function restic_load_config(): array {
     if (!isset($config['jobs']) || !is_array($config['jobs'])) {
         $config['jobs'] = [];
     }
+    // Back-fill hook structure for older configs that predate the feature.
+    foreach ($config['jobs'] as &$_job) {
+        if (!isset($_job['hooks']) || !is_array($_job['hooks'])) {
+            $_job['hooks'] = ['pre_backup' => [], 'post_backup' => []];
+        }
+        if (!isset($_job['hooks']['pre_backup']))  { $_job['hooks']['pre_backup']  = []; }
+        if (!isset($_job['hooks']['post_backup'])) { $_job['hooks']['post_backup'] = []; }
+    }
+    unset($_job);
     return $config;
 }
 
 /**
- * Saves the plugin config to disk.
+ * Saves the plugin config to disk and materializes hook scripts under
+ * /boot/config/plugins/restic-backup/hooks/<jobid>/ so the user can inspect
+ * (or SSH-edit) the exact scripts that will run.
  */
 function restic_save_config(array $config): bool {
     if (!is_dir(RESTIC_CONFIG_DIR)) {
@@ -109,7 +143,86 @@ function restic_save_config(array $config): bool {
         return false;
     }
     $result = @file_put_contents(RESTIC_CONFIG_FILE, $json);
-    return $result !== false;
+    if ($result === false) {
+        return false;
+    }
+    // Best-effort: write hook scripts. Failure here must not fail the save.
+    @restic_write_hook_scripts($config);
+    return true;
+}
+
+/**
+ * Materializes all per-job hook commands as real .sh files under
+ * /boot/config/plugins/restic-backup/hooks/<jobid>/{pre,post}-<idx>-<slug>.sh
+ *
+ * Files for jobs/hooks that no longer exist are deleted so the hooks/ tree
+ * stays in sync with the config.
+ */
+function restic_write_hook_scripts(array $config): void {
+    $root = RESTIC_HOOKS_DIR;
+    if (!is_dir($root)) {
+        @mkdir($root, 0755, true);
+    }
+    // Collect which directories/files we want to keep.
+    $keep_dirs  = [];
+    $keep_files = [];
+
+    foreach ($config['jobs'] ?? [] as $job) {
+        $jid = preg_replace('/[^A-Za-z0-9_-]/', '_', (string)($job['id'] ?? ''));
+        if ($jid === '') { continue; }
+        $job_dir = $root . '/' . $jid;
+        $keep_dirs[$job_dir] = true;
+        if (!is_dir($job_dir)) { @mkdir($job_dir, 0755, true); }
+
+        foreach (['pre_backup' => 'pre', 'post_backup' => 'post'] as $key => $phase) {
+            $list = $job['hooks'][$key] ?? [];
+            foreach ($list as $idx => $hook) {
+                $slug = _restic_slug($hook['name'] ?? '');
+                $fname = sprintf('%s-%02d-%s.sh', $phase, $idx + 1, $slug !== '' ? $slug : 'hook');
+                $path  = $job_dir . '/' . $fname;
+                $keep_files[$path] = true;
+
+                $body  = "#!/bin/bash\n";
+                $body .= "# Auto-generated from restic-backup plugin config.\n";
+                $body .= "# Job: "   . ($job['name']   ?? '') . "\n";
+                $body .= "# Hook: "  . ($hook['name']  ?? '') . "  (phase=$phase, id=" . ($hook['id'] ?? '') . ")\n";
+                $body .= "# Enabled=" . (!empty($hook['enabled']) ? 'yes' : 'no')
+                       . "  Timeout=" . intval($hook['timeout'] ?? 3600) . "s"
+                       . "  OnError=" . ($hook['on_error'] ?? 'continue') . "\n";
+                $body .= "# -- edit the command in the Web UI; manual edits here are overwritten on save --\n\n";
+                $body .= ($hook['command'] ?? '') . "\n";
+
+                // Only rewrite if content differs — avoids unnecessary USB writes.
+                $existing = @file_get_contents($path);
+                if ($existing !== $body) {
+                    @file_put_contents($path, $body);
+                    @chmod($path, 0755);
+                }
+            }
+        }
+    }
+
+    // Prune stale files/directories that no longer correspond to any hook.
+    foreach (glob($root . '/*', GLOB_ONLYDIR) ?: [] as $jdir) {
+        if (!isset($keep_dirs[$jdir])) {
+            // Remove all .sh files then the directory.
+            foreach (glob($jdir . '/*.sh') ?: [] as $f) { @unlink($f); }
+            @rmdir($jdir);
+            continue;
+        }
+        foreach (glob($jdir . '/*.sh') ?: [] as $f) {
+            if (!isset($keep_files[$f])) { @unlink($f); }
+        }
+    }
+}
+
+/**
+ * Filesystem-safe slug for hook names.
+ */
+function _restic_slug(string $name): string {
+    $s = strtolower($name);
+    $s = preg_replace('/[^a-z0-9]+/', '-', $s);
+    return trim($s, '-');
 }
 
 /**
@@ -153,16 +266,25 @@ function restic_get_pid(): int {
 
 /**
  * Returns the path to today's log file.
+ * If $job_id is given, returns the per-job log file for that job
+ * (restic-backup-<job_id>-YYYYMMDD.log). Empty/null means the
+ * combined main log (restic-backup-YYYYMMDD.log).
  */
-function restic_log_file(): string {
-    return RESTIC_LOG_DIR . '/restic-backup-' . date('Ymd') . '.log';
+function restic_log_file(string $job_id = ''): string {
+    $date = date('Ymd');
+    if ($job_id !== '') {
+        $safe = preg_replace('/[^A-Za-z0-9_-]/', '_', $job_id);
+        return RESTIC_LOG_DIR . "/restic-backup-{$safe}-{$date}.log";
+    }
+    return RESTIC_LOG_DIR . "/restic-backup-{$date}.log";
 }
 
 /**
- * Reads the last N lines of the current log file.
+ * Reads the last N lines of a log file. Pass a $job_id to read the
+ * per-job log, or leave empty for the combined main log.
  */
-function restic_read_log(int $lines = 100): string {
-    $logfile = restic_log_file();
+function restic_read_log(int $lines = 100, string $job_id = ''): string {
+    $logfile = restic_log_file($job_id);
     if (!file_exists($logfile)) {
         return '';
     }
@@ -173,15 +295,24 @@ function restic_read_log(int $lines = 100): string {
 
 /**
  * Updates all cron schedules from jobs.
+ *
+ * Every cron entry is wrapped in `flock -w 21600 /tmp/restic-backup.queue`
+ * so that if two jobs fire at the same minute they run sequentially instead
+ * of the second one aborting on the PID lock. The 6h wait window is plenty
+ * even for big repos; longer waits are treated as a failed backup.
  */
 function restic_update_cron(array $config): void {
-    $cron_file = '/etc/cron.d/restic-backup';
-    $lines = [];
+    $cron_file  = '/etc/cron.d/restic-backup';
+    $queue_lock = '/tmp/restic-backup.queue';
+    $lines      = [];
     foreach ($config['jobs'] as $job) {
         if (!empty($job['schedule']['enabled']) && !empty($job['schedule']['cron']) && !empty($job['enabled'])) {
             $cron_expr = $job['schedule']['cron'];
-            $job_id = $job['id'];
-            $lines[] = "{$cron_expr} root /usr/bin/python3 " . RESTIC_SCRIPT . " --backup --job {$job_id}";
+            $job_id    = $job['id'];
+            $cmd       = "/usr/bin/python3 " . RESTIC_SCRIPT . " --backup --job " . escapeshellarg($job_id);
+            // flock blocks for up to 6h; without the lock parallel cron
+            // entries at the same minute collide on the restic-backup PID.
+            $lines[]   = "{$cron_expr} root /usr/bin/flock -w 21600 {$queue_lock} {$cmd}";
         }
     }
     if (!empty($lines)) {
