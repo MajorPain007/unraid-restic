@@ -352,13 +352,20 @@ function restic_read_log(int $lines = 100, string $job_id = ''): string {
 /**
  * Updates all cron schedules from jobs.
  *
+ * Uses the Unraid convention: plugins write their cron entries to
+ * /boot/config/plugins/<name>/<name>.cron (without a user column) and
+ * call /usr/local/sbin/update_cron, which merges ALL plugin cron files
+ * into /var/spool/cron/crontabs/root and signals dcron to reload.
+ *
+ * Earlier versions wrote /etc/cron.d/restic-backup directly, but Unraid's
+ * dcron does not auto-reload that path — scheduled backups never fired.
+ *
  * Every cron entry is wrapped in `flock -w 21600 /tmp/restic-backup.queue`
  * so that if two jobs fire at the same minute they run sequentially instead
- * of the second one aborting on the PID lock. The 6h wait window is plenty
- * even for big repos; longer waits are treated as a failed backup.
+ * of the second one aborting on the PID lock.
  */
 function restic_update_cron(array $config): void {
-    $cron_file  = '/etc/cron.d/restic-backup';
+    $boot_cron  = RESTIC_CONFIG_DIR . '/restic-backup.cron';
     $queue_lock = '/tmp/restic-backup.queue';
     $lines      = [];
     foreach ($config['jobs'] as $job) {
@@ -366,15 +373,26 @@ function restic_update_cron(array $config): void {
             $cron_expr = $job['schedule']['cron'];
             $job_id    = $job['id'];
             $cmd       = "/usr/bin/python3 " . RESTIC_SCRIPT . " --backup --job " . escapeshellarg($job_id);
-            // flock blocks for up to 6h; without the lock parallel cron
-            // entries at the same minute collide on the restic-backup PID.
-            $lines[]   = "{$cron_expr} root /usr/bin/flock -w 21600 {$queue_lock} {$cmd}";
+            // NOTE: no "root" user column here — Unraid's update_cron feeds
+            // these entries into the root crontab directly.
+            $lines[]   = "{$cron_expr} /usr/bin/flock -w 21600 {$queue_lock} {$cmd}";
         }
     }
+
     if (!empty($lines)) {
-        @file_put_contents($cron_file, implode("\n", $lines) . "\n");
-    } elseif (file_exists($cron_file)) {
-        @unlink($cron_file);
+        if (!is_dir(RESTIC_CONFIG_DIR)) { @mkdir(RESTIC_CONFIG_DIR, 0755, true); }
+        @file_put_contents($boot_cron, implode("\n", $lines) . "\n");
+        @chmod($boot_cron, 0644);
+    } elseif (file_exists($boot_cron)) {
+        @unlink($boot_cron);
+    }
+
+    // Ask Unraid to rebuild the root crontab and HUP crond. Without this,
+    // dcron keeps running the previous crontab until the next boot.
+    if (is_executable('/usr/local/sbin/update_cron')) {
+        @shell_exec('/usr/local/sbin/update_cron 2>/dev/null');
+    } else {
+        @shell_exec('/usr/bin/killall -HUP crond 2>/dev/null');
     }
 }
 

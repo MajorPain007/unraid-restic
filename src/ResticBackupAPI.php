@@ -929,6 +929,8 @@ switch ($action) {
 
     // =========================================================================
     // RESTIC SELF-UPDATE — binary in-place upgrade (preserves perms)
+    // After a successful update we refresh the USB-stick cache so a
+    // reboot without internet can restore the new binary.
     // =========================================================================
     case 'restic_self_update': {
         $cmd = '/usr/local/bin/restic self-update 2>&1';
@@ -936,6 +938,17 @@ switch ($action) {
         $text = trim(implode("\n", $output));
         // Grab version after update
         $ver = shell_exec('/usr/local/bin/restic version 2>&1');
+        if ($ret === 0 && is_file('/usr/local/bin/restic')) {
+            $cache_dir = RESTIC_CONFIG_DIR;
+            $cache_bin = $cache_dir . '/restic.bin';
+            $cache_ver = $cache_dir . '/restic.version';
+            if (!is_dir($cache_dir)) @mkdir($cache_dir, 0755, true);
+            @copy('/usr/local/bin/restic', $cache_bin);
+            @chmod($cache_bin, 0644);
+            if (preg_match('/restic\s+(\S+)/', (string)$ver, $m)) {
+                @file_put_contents($cache_ver, $m[1] . "\n");
+            }
+        }
         echo json_encode([
             'status'  => $ret === 0 ? 'success' : 'error',
             'message' => $text,

@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "restic-backup">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.04.18.09">
-<!ENTITY md5       "0dfde9efc6ab098615bbb53d4ed8b5ca">
+<!ENTITY version   "2026.04.18.10">
+<!ENTITY md5       "caadb7a4d9a08966c11686e9e5ff959e">
 <!ENTITY launch    "Settings/ResticBackup">
 <!ENTITY github    "MajorPain007/unraid-restic">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/src/&name;.plg">
@@ -22,6 +22,23 @@
         icon="shield">
 
 <CHANGES>
+## Version 2026.04.18.10
+- Scheduled backups now actually fire. The previous version wrote cron
+  entries to /etc/cron.d/restic-backup, which Unraid's dcron does not
+  reload automatically — so the configured schedule had no effect.
+  The plugin now uses the Unraid convention: it writes the entries to
+  /boot/config/plugins/restic-backup/restic-backup.cron (no user
+  column) and calls /usr/local/sbin/update_cron, which merges the
+  entries into root's crontab and HUPs crond.
+- Restic binary is now cached on the USB stick at
+  /boot/config/plugins/restic-backup/restic.bin during install and
+  after every Self-Update. On boot, the rc.d script restores the
+  binary from that cache if /usr/local/bin/restic is missing — so a
+  reboot without internet no longer leaves the server without restic.
+- Self-Update replaces the binary in /usr/local/bin AND refreshes the
+  cached copy on the USB stick, so the new version survives the next
+  reboot.
+
 ## Version 2026.04.18.09
 - Fix SFTP (and other non-local) repository URL handling in the target
   editor: the Test and Init Repo buttons were only sending the input
@@ -282,7 +299,11 @@ rm -f $(ls &configDir;/&name;-*.txz 2>/dev/null | grep -v '&version;')
 <!-- Install/refresh restic binary — downloaded inline so that transient
      network issues (e.g. github.com release CDN redirects) don't abort
      the plugin upgrade itself. The plugin can still be used with the
-     previously installed restic binary if the download fails. -->
+     previously installed restic binary if the download fails.
+
+     The installed binary is ALSO cached on the USB stick at
+     &configDir;/restic.bin so that a reboot without internet can restore
+     /usr/local/bin/restic via the rc.d script. -->
 <FILE Run="/bin/bash">
 <INLINE>
 # NOTE: intentionally no `set -e` — we want the plugin install to succeed
@@ -294,8 +315,20 @@ BIN_URL="&resticURL;"
 SUMS_URL="&resticSumsURL;"
 TMP_BZ="/tmp/restic.bz2"
 TMP_SUMS="/tmp/restic.SHA256SUMS"
+CACHE_DIR="&configDir;"
+CACHE_BIN="$CACHE_DIR/restic.bin"
+CACHE_VER="$CACHE_DIR/restic.version"
 
 need_install=1
+
+# If /usr/local/bin/restic is missing but we have a cached copy on the
+# USB stick (e.g. after a reboot of tmpfs root), restore it first — this
+# keeps the binary available even without internet access.
+if [ ! -x /usr/local/bin/restic ] &amp;&amp; [ -s "$CACHE_BIN" ]; then
+    echo "Restoring restic from USB cache ($CACHE_BIN)..."
+    install -m 0755 "$CACHE_BIN" /usr/local/bin/restic 2>/dev/null || cp -f "$CACHE_BIN" /usr/local/bin/restic
+    chmod 755 /usr/local/bin/restic 2>/dev/null
+fi
 
 if [ -x /usr/local/bin/restic ]; then
     INSTALLED=$(/usr/local/bin/restic version 2>/dev/null | awk '/^restic/ {print $2}')
@@ -338,6 +371,13 @@ if [ "$need_install" = "1" ]; then
             mv /tmp/restic /usr/local/bin/restic
             chmod 755 /usr/local/bin/restic
             echo "Restic installed: $(/usr/local/bin/restic version 2>/dev/null || echo unknown)"
+
+            # Cache a copy on the USB stick so the next reboot can
+            # restore it without needing internet access.
+            mkdir -p "$CACHE_DIR"
+            cp -f /usr/local/bin/restic "$CACHE_BIN" &amp;&amp; chmod 0644 "$CACHE_BIN"
+            echo "&resticVer;" > "$CACHE_VER"
+            echo "Cached restic binary on USB: $CACHE_BIN"
         fi
     else
         echo "WARNING: restic download skipped — plugin will use previously installed restic (if any)."
@@ -346,16 +386,36 @@ if [ "$need_install" = "1" ]; then
 
     rm -f "$TMP_SUMS"
 fi
+
+# Defensive: if we have /usr/local/bin/restic now but no cache yet (e.g.
+# upgrade path from an earlier plugin version), seed the cache.
+if [ -x /usr/local/bin/restic ] &amp;&amp; [ ! -s "$CACHE_BIN" ]; then
+    mkdir -p "$CACHE_DIR"
+    cp -f /usr/local/bin/restic "$CACHE_BIN" &amp;&amp; chmod 0644 "$CACHE_BIN"
+    /usr/local/bin/restic version 2>/dev/null | awk '/^restic/ {print $2}' > "$CACHE_VER"
+    echo "Seeded USB cache from existing /usr/local/bin/restic."
+fi
+
 exit 0
 </INLINE>
 </FILE>
 
-<!-- rc.d script: restore cron jobs on every boot -->
+<!-- rc.d script: on every boot, restore restic from USB cache (tmpfs root
+     means /usr/local/bin gets wiped on reboot if not seeded from a
+     persistent source), then reinstate cron jobs. -->
 <FILE Name="/etc/rc.d/rc.&name;" Mode="755">
 <INLINE>
 #!/bin/bash
 mkdir -p &tmpDir;
-&pluginDir;/scripts/setup_cron.sh &gt;&tmpDir;/setup_cron.log 2&gt;&amp;1
+
+# Restore restic binary from USB cache if it's missing (tmpfs rootfs).
+CACHE_BIN="&configDir;/restic.bin"
+if [ ! -x /usr/local/bin/restic ] &amp;&amp; [ -s "$CACHE_BIN" ]; then
+    cp -f "$CACHE_BIN" /usr/local/bin/restic &amp;&amp; chmod 0755 /usr/local/bin/restic \
+        &amp;&amp; echo "restic restored from USB cache on boot" &gt;&gt; &tmpDir;/setup_cron.log
+fi
+
+&pluginDir;/scripts/setup_cron.sh &gt;&gt;&tmpDir;/setup_cron.log 2&gt;&amp;1
 </INLINE>
 </FILE>
 
@@ -380,8 +440,10 @@ if [ -f /tmp/restic-backup.pid ]; then
     rm -f /tmp/restic-backup.pid
     rm -f /tmp/restic-backup.lock
 fi
-rm -f /etc/cron.d/&name;
+rm -f &configDir;/&name;.cron
 rm -f /etc/rc.d/rc.&name;
+# Rebuild root crontab without our entries.
+[ -x /usr/local/sbin/update_cron ] &amp;&amp; /usr/local/sbin/update_cron
 removepkg &name; 2>/dev/null || rm -rf &pluginDir;
 rm -rf &tmpDir;
 echo "Restic Backup removed. Settings in &configDir; preserved."
