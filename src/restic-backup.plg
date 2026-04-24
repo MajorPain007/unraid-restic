@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "restic-backup">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.04.18.10">
-<!ENTITY md5       "caadb7a4d9a08966c11686e9e5ff959e">
+<!ENTITY version   "2026.04.18.11">
+<!ENTITY md5       "d2f134bcdf2b14471646baeedd42caac">
 <!ENTITY launch    "Settings/ResticBackup">
 <!ENTITY github    "MajorPain007/unraid-restic">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/src/&name;.plg">
@@ -22,6 +22,16 @@
         icon="shield">
 
 <CHANGES>
+## Version 2026.04.18.11
+- Fix "bash: line N: exec: restic: not found" error when scheduled
+  backups run. The Python runner and the PHP shell calls were calling
+  `restic` bare, relying on PATH. Under cron — and inside the
+  `unshare -m bash -c "... exec restic ..."` wrapper used for ZFS
+  staging — PATH is minimal and /usr/local/bin is NOT included, so
+  the bare `restic` can't be resolved. Fixed by calling the binary by
+  its absolute path (/usr/local/bin/restic) everywhere in the Python
+  runner and PHP API.
+
 ## Version 2026.04.18.10
 - Scheduled backups now actually fire. The previous version wrote cron
   entries to /etc/cron.d/restic-backup, which Unraid's dcron does not

@@ -264,7 +264,7 @@ switch ($action) {
 
         $sftp_args = restic_sftp_args($type, $creds);
         $sfx = implode(' ', array_map('escapeshellarg', $sftp_args));
-        $cmd = "{$env} restic -r " . escapeshellarg($url) . ($sfx ? " $sfx" : '') . " init 2>&1";
+        $cmd = "{$env} /usr/local/bin/restic -r " . escapeshellarg($url) . ($sfx ? " $sfx" : '') . " init 2>&1";
         $output = [];
         exec($cmd, $output, $ret);
         $text = implode("\n", $output);
@@ -303,7 +303,7 @@ switch ($action) {
 
         $sftp_args = restic_sftp_args($type, $creds);
         $sfx = implode(' ', array_map('escapeshellarg', $sftp_args));
-        $cmd = "{$env} restic -r " . escapeshellarg($url) . ($sfx ? " $sfx" : '') . " snapshots --latest 1 2>&1";
+        $cmd = "{$env} /usr/local/bin/restic -r " . escapeshellarg($url) . ($sfx ? " $sfx" : '') . " snapshots --latest 1 2>&1";
         $output = [];
         exec($cmd, $output, $ret);
         $text = implode("\n", $output);
@@ -399,7 +399,7 @@ switch ($action) {
             $env = 'RESTIC_PASSWORD=' . escapeshellarg($pw_inline);
         }
 
-        $cmd = "{$env} restic -r " . escapeshellarg($url) . " snapshots --json 2>&1";
+        $cmd = "{$env} /usr/local/bin/restic -r " . escapeshellarg($url) . " snapshots --json 2>&1";
         $output = [];
         exec($cmd, $output, $ret);
         $text = implode("\n", $output);
@@ -432,7 +432,7 @@ switch ($action) {
         $env_str  = restic_build_env_str($tc['env']);
         $sfx      = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
         $lim      = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
-        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+        $cmd = "{$env_str} /usr/local/bin/restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '')
              . ($lim ? " $lim" : '')
              . " snapshots --json 2>&1";
@@ -490,7 +490,7 @@ switch ($action) {
         if ($snap_id !== '')       { $flags[] = '--snapshot ' . escapeshellarg($snap_id); }
         if ($newest !== '')        { $flags[] = '-N ' . escapeshellarg($newest); }
 
-        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+        $cmd = "{$env_str} /usr/local/bin/restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '')
              . ($lim ? " $lim" : '')
              . ' find ' . implode(' ', $flags)
@@ -548,7 +548,7 @@ switch ($action) {
         if (!file_exists($cache_file) || (time() - filemtime($cache_file)) >= $cache_ttl) {
             $tmp_file = $cache_file . '.tmp';
             $err_file = $cache_file . '.err';
-            $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+            $cmd = "{$env_str} /usr/local/bin/restic -r " . escapeshellarg($tc['url'])
                  . ($sfx ? " $sfx" : '')
                  . ($lim ? " $lim" : '')
                  . " ls --json " . escapeshellarg($snapshot_id)
@@ -640,7 +640,7 @@ switch ($action) {
         if (!file_exists($cache_file) || (time() - filemtime($cache_file)) >= $cache_ttl) {
             $tmp_file = $cache_file . '.tmp';
             $err_file = $cache_file . '.err';
-            $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+            $cmd = "{$env_str} /usr/local/bin/restic -r " . escapeshellarg($tc['url'])
                  . ($sfx ? " $sfx" : '')
                  . ($lim ? " $lim" : '')
                  . " ls --json " . escapeshellarg($snapshot_id)
@@ -760,7 +760,7 @@ switch ($action) {
         }
         $use_staging = ($common_parent !== '/' && $common_parent !== '' && $common_parent !== '.');
 
-        $restic_cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+        $restic_cmd = "{$env_str} /usr/local/bin/restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '')
              . ($lim ? " $lim" : '')
              . " restore " . escapeshellarg($snapshot_id)
@@ -812,7 +812,7 @@ switch ($action) {
         $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
         $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
         $flag    = $remove_all ? ' --remove-all' : '';
-        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+        $cmd = "{$env_str} /usr/local/bin/restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
              . " unlock{$flag} 2>&1";
         $output = []; exec($cmd, $output, $ret);
@@ -843,7 +843,7 @@ switch ($action) {
         $env_str = restic_build_env_str($tc['env']);
         $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
         $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
-        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+        $cmd = "{$env_str} /usr/local/bin/restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
              . ' stats --mode ' . escapeshellarg($mode) . ' --json 2>&1';
         $output = []; exec($cmd, $output, $ret);
@@ -882,7 +882,7 @@ switch ($action) {
         $logfile = RESTIC_LOG_DIR . '/restic-recover-' . date('Ymd-His') . '.log';
 
         // recover can take a while; run in background and stream to a log file.
-        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+        $cmd = "{$env_str} /usr/local/bin/restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
              . ' recover >> ' . escapeshellarg($logfile) . ' 2>&1';
         exec('nohup bash -c ' . escapeshellarg($cmd) . ' &');
@@ -915,7 +915,7 @@ switch ($action) {
         if ($subset !== '')      { $extra .= ' --read-data-subset=' . escapeshellarg($subset); }
         elseif ($read_data)      { $extra .= ' --read-data'; }
         $logfile = RESTIC_LOG_DIR . '/restic-check-' . date('Ymd-His') . '.log';
-        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+        $cmd = "{$env_str} /usr/local/bin/restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
              . ' check' . $extra . ' >> ' . escapeshellarg($logfile) . ' 2>&1';
         exec('nohup bash -c ' . escapeshellarg($cmd) . ' &');
@@ -1025,7 +1025,7 @@ switch ($action) {
         $env_str = restic_build_env_str($tc['env']);
         $sfx     = implode(' ', array_map('escapeshellarg', $tc['sftp_args']));
         $lim     = implode(' ', array_map('escapeshellarg', $tc['limit_args'] ?? []));
-        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+        $cmd = "{$env_str} /usr/local/bin/restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
              . ' diff --json '
              . escapeshellarg($snap_a) . ' ' . escapeshellarg($snap_b)
@@ -1104,7 +1104,7 @@ switch ($action) {
         $ids_str = implode(' ', array_map('escapeshellarg', $ids));
 
         // For set/add with empty tags, restic still accepts empty value (clears); same for remove.
-        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+        $cmd = "{$env_str} /usr/local/bin/restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
              . " tag {$flag} " . escapeshellarg($tags)
              . ' ' . $ids_str . ' 2>&1';
@@ -1152,7 +1152,7 @@ switch ($action) {
         $ids_str = implode(' ', array_map('escapeshellarg', $ids));
         $flag    = $prune ? ' --prune' : '';
         $logfile = RESTIC_LOG_DIR . '/restic-forget-' . date('Ymd-His') . '.log';
-        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+        $cmd = "{$env_str} /usr/local/bin/restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
              . " forget{$flag} {$ids_str} >> " . escapeshellarg($logfile) . ' 2>&1';
         exec('nohup bash -c ' . escapeshellarg($cmd) . ' &');
@@ -1233,7 +1233,7 @@ switch ($action) {
         $ids_str = implode(' ', array_map('escapeshellarg', $ids));
         $forget_flag = $forget ? ' --forget' : '';
         $logfile = RESTIC_LOG_DIR . '/restic-rewrite-' . date('Ymd-His') . '.log';
-        $cmd = "{$env_str} restic -r " . escapeshellarg($tc['url'])
+        $cmd = "{$env_str} /usr/local/bin/restic -r " . escapeshellarg($tc['url'])
              . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
              . " rewrite{$forget_flag}{$ex_flags} {$ids_str} >> "
              . escapeshellarg($logfile) . ' 2>&1';
@@ -1305,7 +1305,7 @@ switch ($action) {
         }
 
         $logfile = RESTIC_LOG_DIR . '/restic-copy-' . date('Ymd-His') . '.log';
-        $cmd = "{$env_str} restic -r " . escapeshellarg($src['url'])
+        $cmd = "{$env_str} /usr/local/bin/restic -r " . escapeshellarg($src['url'])
              . ($sfx ? " $sfx" : '') . ($lim ? " $lim" : '')
              . ' --repo2 ' . escapeshellarg($dst['url'])
              . ' copy' . $filter . $ids_str

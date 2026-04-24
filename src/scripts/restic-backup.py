@@ -34,6 +34,12 @@ PID_FILE      = "/tmp/restic-backup.pid"
 LOG_DIR       = "/tmp"
 PROGRESS_DIR  = "/tmp"                      # per-job progress JSON files
 
+# Absolute path to the restic binary. Under cron / `unshare -m bash -c`
+# PATH is minimal and /usr/local/bin is not included, so a bare "restic"
+# fails with "exec: restic: not found". Always call the binary by its
+# full path.
+RESTIC_BIN    = "/usr/local/bin/restic"
+
 # ==============================================================================
 # LOGGER
 # ==============================================================================
@@ -424,7 +430,7 @@ def verify_restore(url, sftp_opts, lim_opts, env, abs_path):
     # 2) Restore the single file from the newest snapshot into a temp dir.
     tmpd = tempfile.mkdtemp(prefix="restic-verify-")
     try:
-        cmd = ["restic", "-r", url] + sftp_opts + lim_opts + [
+        cmd = [RESTIC_BIN, "-r", url] + sftp_opts + lim_opts + [
             "restore", "latest",
             "--include", abs_path,
             "--target",  tmpd,
@@ -899,7 +905,7 @@ def run_job(config, job):
 
             sftp_opts = get_sftp_opts(target)
             lim_opts  = get_limit_opts(target)
-            cmd_head = ["restic", "-r", url] + sftp_opts + lim_opts + ["backup"]
+            cmd_head = [RESTIC_BIN, "-r", url] + sftp_opts + lim_opts + ["backup"]
             if tags:
                 cmd_head.extend(["--tag", tags])
             if hostname:
@@ -942,7 +948,7 @@ def run_job(config, job):
                 logger.info(f"  Upload done ({up_dur})")
 
                 # Retention / Prune — restricted to this job's tag when set
-                prune_cmd = ["restic", "-r", url] + sftp_opts + lim_opts + ["forget", "--prune"]
+                prune_cmd = [RESTIC_BIN, "-r", url] + sftp_opts + lim_opts + ["forget", "--prune"]
                 if tags:
                     # Use the first tag as the isolation key for forget so that
                     # multiple jobs sharing one repository don't prune each other.
@@ -962,7 +968,7 @@ def run_job(config, job):
                 run_cmd(prune_cmd, check=False, env=target_env)
 
                 # Stats
-                stats = run_cmd(["restic", "-r", url] + sftp_opts + lim_opts + ["stats", "latest",
+                stats = run_cmd([RESTIC_BIN, "-r", url] + sftp_opts + lim_opts + ["stats", "latest",
                                  "--mode", "restore-size"], check=False, capture_output=True, env=target_env)
                 if stats and isinstance(stats, str):
                     for line in stats.splitlines():
@@ -983,7 +989,7 @@ def run_job(config, job):
                 if should_check:
                     pct = check_conf.get("percentage", "2%")
                     logger.info(f"  Integrity check ({pct})...")
-                    cr = run_cmd(["restic", "-r", url] + sftp_opts + lim_opts + ["check", f"--read-data-subset={pct}"], check=False, env=target_env)
+                    cr = run_cmd([RESTIC_BIN, "-r", url] + sftp_opts + lim_opts + ["check", f"--read-data-subset={pct}"], check=False, env=target_env)
                     if cr is True:
                         logger.info("  Check passed")
                     else:
